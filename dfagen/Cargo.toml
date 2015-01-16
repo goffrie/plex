@@ -1,0 +1,14 @@
+[package]
+
+name = "dfagen"
+version = "0.0.1"
+authors = ["Geoffry Song <goffrie@gmail.com>"]
+
+[lib]
+
+name = "dfagen"
+plugin = true
+
+[dependencies.regex_dfa]
+
+path = "../regex_dfa"

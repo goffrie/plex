@@ -7,13 +7,12 @@ extern crate regex_dfa;
 extern crate syntax;
 extern crate rustc;
 
-use std::iter::Peekable;
 use syntax::ptr::P;
-use syntax::{codemap, parse, ast, abi, owned_slice};
+use syntax::{codemap, ast, abi, owned_slice};
 use syntax::parse::{parser, token, classify};
-use syntax::ext::{base, build};
+use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
-use regex_dfa::{Regex, Dfa, Transition};
+use regex_dfa::{Regex, Dfa};
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 
@@ -256,10 +255,10 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     }
 
     let dfa_transition_fns: Vec<_> = (0..arms.len())
-        .map(|&: i| token::str_to_ident(&format!("transition_{}", i)[]))
+        .map(|i| token::str_to_ident(&format!("transition_{}", i)[]))
         .collect();
     let dfa_acceptance_fns: Vec<_> = (0..arms.len())
-        .map(|&: i| token::str_to_ident(&format!("accepting_{}", i)[]))
+        .map(|i| token::str_to_ident(&format!("accepting_{}", i)[]))
         .collect();
 
     let mut helpers = Vec::new();
@@ -278,8 +277,8 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
                               vec![
                                 cx.arm(DUMMY_SP,
                                        dfa.transitions.iter().enumerate()
-                                        .filter(|&: &(_, x)| x.accepting)
-                                        .map(|&: (i, _)|
+                                        .filter(|&(_, x)| x.accepting)
+                                        .map(|(i, _)|
                                                 cx.pat_lit(DUMMY_SP,
                                                            cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64,
                                                                                              ast::UnsignedIntLit(ast::TyU32)))))
@@ -300,23 +299,23 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     let st = token::gensym_ident("st");
     let ch = token::gensym_ident("ch");
     let rest = token::gensym_ident("rest");
-    let check_matches = arms.iter().enumerate().rev().fold(
+    let check_matches = (0..arms.len()).rev().fold(
         cx.expr_block(cx.block(DUMMY_SP, Vec::new(), None)),
-        |&: acc, (i, &(ref dfa, _))| {
+        |acc, i| {
             let accepting = dfa_acceptance_fns[i];
             let ix = cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus)));
             cx.expr_if(DUMMY_SP, quote_expr!(cx, $accepting($states[$ix])),
                        quote_expr!(cx, $last_match = Some(($ix, $remaining))),
                        Some(acc))
         });
-    let advance_dfas = cx.expr_block(cx.block(DUMMY_SP, arms.iter().enumerate().map(
-        |&: (i, &(ref dfa, _))| {
+    let advance_dfas = cx.expr_block(cx.block(DUMMY_SP, (0..arms.len()).map(
+        |i| {
             let transition = dfa_transition_fns[i];
             let ix = cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus)));
             quote_stmt!(cx, $states[$ix] = $transition($states[$ix], $ch);)
         }).collect(), None));
     let compute_result = cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, which),
-        arms.into_iter().enumerate().map(|&: (i, (_, expr))|
+        arms.into_iter().enumerate().map(|(i, (_, expr))|
             cx.arm(DUMMY_SP,
                    vec![cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus))))],
                    expr)).collect::<Vec<_>>() + &[cx.arm_unreachable(DUMMY_SP)]);
@@ -344,7 +343,7 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
             },
         },
         cx.block(DUMMY_SP,
-            helpers.map_in_place(|&: x| cx.stmt_item(DUMMY_SP, x)) + &[
+            helpers.map_in_place(|x| cx.stmt_item(DUMMY_SP, x)) + &[
                 quote_stmt!(cx, let mut $states = [0; $vec_size];),
                 quote_stmt!(cx, let mut $remaining = *$input;),
                 quote_stmt!(cx, let mut $last_match = None;),

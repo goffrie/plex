@@ -19,35 +19,6 @@ use lalr::*;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 
-pub trait Matchable {
-    fn to_pat(&self, cx: &base::ExtCtxt) -> P<ast::Pat>;
-}
-
-impl Matchable for ast::Ident {
-    fn to_pat(&self, cx: &base::ExtCtxt) -> P<ast::Pat> {
-        cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, *self), None))
-    }
-}
-
-impl Matchable for char {
-    fn to_pat(&self, cx: &base::ExtCtxt) -> P<ast::Pat> {
-        cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitChar(*self)))
-    }
-}
-
-pub trait Actionable<T, N> {
-    fn to_block(&self, cx: &base::ExtCtxt, syms: &[Symbol<T, N>]) -> (P<ast::Block>, Vec<P<ast::Pat>>);
-}
-
-impl<T, N> Actionable<T, N> for () {
-    fn to_block(&self, cx: &base::ExtCtxt, syms: &[Symbol<T, N>]) -> (P<ast::Block>, Vec<P<ast::Pat>>) {
-        // let arg_ids: Vec<_> = (0..syms.len()).map(|i|
-        //     cx.pat_ident(DUMMY_SP, token::gensym_ident(&format!("arg{}", i)[]))).collect();
-        let arg_ids = (0..syms.len()).map(|_| cx.pat_wild(DUMMY_SP)).collect();
-        (cx.block(DUMMY_SP, vec![], None), arg_ids)
-    }
-}
-
 fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyU32)))
 }
@@ -55,14 +26,22 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
-pub fn lr1_machine<T: Ord + fmt::Show + fmt::String + Matchable, N: Ord + fmt::Show, A: Ord + fmt::Show + Actionable<T, N>>(
+pub fn lr1_machine<T, N, A, FM, FA>(
     cx: &mut base::ExtCtxt,
     grammar: Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
     token_ty: P<ast::Ty>,
     name: ast::Ident,
     vis: ast::Visibility,
-) -> P<ast::Item> {
+    mut to_pat: FM,
+    mut to_block: FA,
+) -> P<ast::Item>
+where T: Ord + fmt::Show + fmt::String,
+      N: Ord + fmt::Show,
+      A: Ord + fmt::Show,
+      FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
+      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Block>, Vec<P<ast::Pat>>),
+{
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
@@ -147,7 +126,7 @@ pub fn lr1_machine<T: Ord + fmt::Show + fmt::String + Matchable, N: Ord + fmt::S
         }
         let t = types.get(lhs).unwrap();
         for rhs in rhss.iter() {
-            let (ret, arg_pats) = rhs.act.to_block(cx, &rhs.syms[]);
+            let (ret, arg_pats) = to_block(&rhs.act, cx, &rhs.syms[]);
             let args: Vec<_> = rhs.syms.iter().zip(arg_pats.into_iter()).map(|(s, pat)| ast::Arg {
                 ty: match *s {
                     Terminal(_) => token_ty.clone(),
@@ -245,7 +224,7 @@ pub fn lr1_machine<T: Ord + fmt::Show + fmt::String + Matchable, N: Ord + fmt::S
                         }
                     };
                     cx.arm(DUMMY_SP, vec![match maybe_tok {
-                        Some(tok) => cx.pat_some(DUMMY_SP, tok.to_pat(cx)),
+                        Some(&tok) => cx.pat_some(DUMMY_SP, to_pat(tok, cx)),
                         None => cx.pat_none(DUMMY_SP),
                     }], block)
                 }).collect();

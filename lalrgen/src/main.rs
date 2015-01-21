@@ -5,8 +5,10 @@ extern crate lalr;
 extern crate syntax;
 
 use lalr::*;
+use syntax::ast;
 use syntax::codemap::{self, DUMMY_SP};
 use syntax::ext::base::ExtCtxt;
+use syntax::ext::build::AstBuilder;
 use std::collections::BTreeMap;
 use syntax::parse::token::str_to_ident;
 use lib as lalrgen;
@@ -72,6 +74,22 @@ fn main() {
         (*k, quote_ty!(cx, ()))
     ).collect();
     let token_ty = quote_ty!(cx, char);
-    let x = lalrgen::lr1_machine(cx, g, &types, token_ty, syntax::parse::token::str_to_ident("parse"), syntax::ast::Visibility::Public);
+    let x = lalrgen::lr1_machine(
+        cx,
+        g,
+        &types,
+        token_ty,
+        syntax::parse::token::str_to_ident("parse"),
+        syntax::ast::Visibility::Public,
+        |&ch, cx| {
+            cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitChar(ch)))
+        },
+        |&(), cx, syms| {
+            // let arg_ids: Vec<_> = (0..syms.len()).map(|i|
+            //     cx.pat_ident(DUMMY_SP, token::gensym_ident(&format!("arg{}", i)[]))).collect();
+            let arg_ids = (0..syms.len()).map(|_| cx.pat_wild(DUMMY_SP)).collect();
+            (cx.block(DUMMY_SP, vec![], None), arg_ids)
+        },
+    );
     println!("{}", syntax::print::pprust::item_to_string(&*x));
 }

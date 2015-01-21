@@ -1,5 +1,6 @@
 #![allow(unstable)]
 #![feature(quote)]
+#![feature(plugin_registrar)]
 
 extern crate lalr;
 extern crate syntax;
@@ -76,11 +77,10 @@ fn main() {
     let token_ty = quote_ty!(cx, char);
     let x = lalrgen::lr1_machine(
         cx,
-        g,
+        &g,
         &types,
         token_ty,
         syntax::parse::token::str_to_ident("parse"),
-        syntax::ast::Visibility::Public,
         |&ch, cx| {
             cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitChar(ch)))
         },

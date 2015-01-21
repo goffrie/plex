@@ -8,11 +8,11 @@ extern crate syntax;
 extern crate rustc;
 
 use std::collections::BTreeMap;
-use std::fmt;
+use std::{iter, fmt, cmp};
 use std::fmt::Writer;
 use syntax::ptr::P;
-use syntax::{ast, owned_slice};
-use syntax::parse::token;
+use syntax::{ast, owned_slice, codemap};
+use syntax::parse::{parser, token, classify};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use lalr::*;
@@ -26,13 +26,29 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
+fn variant(name: ast::Ident, tys: Vec<P<ast::Ty>> ) -> ast::Variant {
+    let args = tys.into_iter().map(|ty| {
+        ast::VariantArg { ty: ty, id: DUMMY_NODE_ID }
+    }).collect();
+
+    codemap::respan(DUMMY_SP,
+        ast::Variant_ {
+            name: name,
+            attrs: vec![],
+            kind: ast::TupleVariantKind(args),
+            id: DUMMY_NODE_ID,
+            disr_expr: None,
+            vis: ast::Inherited,
+        })
+}
+
+
 pub fn lr1_machine<T, N, A, FM, FA>(
     cx: &mut base::ExtCtxt,
-    grammar: Grammar<T, N, A>,
+    grammar: &Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
     token_ty: P<ast::Ty>,
     name: ast::Ident,
-    vis: ast::Visibility,
     mut to_pat: FM,
     mut to_block: FA,
 ) -> P<ast::Item>
@@ -109,12 +125,10 @@ where T: Ord + fmt::Show + fmt::String,
     let mut stmts = Vec::new();
     stmts.push(cx.stmt_item(DUMMY_SP, cx.item_enum(DUMMY_SP, st_ty_id, ast::EnumDef {
         variants: st_variant_ids.iter()
-            .map(|(k, &id)| {
-                cx.variant(DUMMY_SP, id, vec![
-                    types.get(*k).unwrap().clone()
-                ])
-            })
-            .chain(Some(cx.variant(DUMMY_SP, st_token_id, vec![
+            .map(|(k, &id)| variant(id, vec![
+                types.get(*k).unwrap().clone()
+            ]))
+            .chain(Some(variant(st_token_id, vec![
                 token_ty.clone()
             ])).into_iter())
             .map(|x| P(x))
@@ -248,4 +262,147 @@ where T: Ord + fmt::Show + fmt::String,
                                              quote_ty!(cx, (Option<$token_ty>, &'static str))],
                                         vec![]));
     cx.item_fn_poly(DUMMY_SP, name, args, out_ty, generics, body)
+}
+
+fn expand_parser<'a>(
+    cx: &'a mut base::ExtCtxt,
+    sp: codemap::Span,
+    name: ast::Ident,
+    tts: Vec<ast::TokenTree>
+) -> Box<base::MacResult + 'a> {
+    #[derive(Show)]
+    struct Action {
+        binds: Vec<Option<P<ast::Pat>>>,
+        expr: P<ast::Expr>,
+    }
+
+    // These are hacks, necessary because of a bug in Rust deriving
+    impl PartialEq for Action {
+        fn eq(&self, other: &Action) -> bool { true }
+    }
+    impl Eq for Action { }
+    impl PartialOrd for Action {
+        fn partial_cmp(&self, other: &Action) -> Option<cmp::Ordering> { Some(cmp::Ordering::Equal) }
+    }
+    impl Ord for Action {
+        fn cmp(&self, other: &Action) -> cmp::Ordering { cmp::Ordering::Equal }
+    }
+
+    let mut parser = cx.new_parser_from_tts(&*tts);
+    let token_ty = parser.parse_ty();
+    if parser.eat(&token::OpenDelim(token::Brace)) {
+        // TODO
+        parser.expect(&token::CloseDelim(token::Brace));
+    } else {
+        parser.expect(&token::Semi);
+    }
+    let mut rules = BTreeMap::new();
+    let mut types = BTreeMap::new();
+    let mut start = None;
+    while parser.token != token::Eof {
+        // parse "LHS: Type {"
+        let lhs = parser.parse_ident().name;
+        if start.is_none() {
+            start = Some(lhs);
+        }
+        if rules.contains_key(&lhs) {
+            let sp = parser.last_span;
+            parser.span_err(sp, "duplicate nonterminal");
+        }
+        parser.expect(&token::Colon);
+        let ty = parser.parse_ty();
+        types.insert(lhs, ty);
+        parser.expect(&token::OpenDelim(token::Brace));
+        let mut rhss = Vec::new();
+        while parser.token != token::CloseDelim(token::Brace) {
+            let (rule, binds): (Vec<_>, Vec<_>) = iter::Unfold::new((), |_| {
+                if parser.token == token::FatArrow {
+                    return None;
+                }
+                let name = parser.parse_ident();
+                let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
+                    let r = parser.parse_pat();
+                    parser.expect(&token::CloseDelim(token::Bracket));
+                    Some(r)
+                } else {
+                    None
+                };
+                Some((name, bind))
+            }).unzip();
+
+            parser.expect(&token::FatArrow);
+
+            // start parsing the expr
+            let expr = parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR);
+            let optional_comma =
+                // don't need a comma for blocks...
+                classify::expr_is_simple_block(&*expr)
+                // or for the last arm
+                || parser.token == token::CloseDelim(token::Brace);
+
+            if optional_comma {
+                // consume optional comma
+                parser.eat(&token::Comma);
+            } else {
+                // comma required
+                // `expr` may not be complete, so continue parsing until the comma or close-brace
+                parser.commit_expr(&*expr, &[token::Comma], &[token::CloseDelim(token::Brace)]);
+            }
+
+            rhss.push((rule, binds, expr));
+        }
+        parser.expect(&token::CloseDelim(token::Brace));
+        rules.insert(lhs, rhss);
+    }
+    let mut rules: BTreeMap<ast::Name, Vec<_>> = rules.into_iter().map(|(lhs, rhss)| {
+        let rhss = rhss.into_iter().map(|(rule, binds, expr)| {
+            // figure out which symbols in `rule` are nonterminals vs terminals
+            let syms = rule.into_iter().map(|ident| {
+                if types.contains_key(&ident.name) {
+                    Nonterminal(ident.name)
+                } else {
+                    Terminal(ident)
+                }
+            }).collect();
+            Rhs {
+                syms: syms,
+                act: Action {
+                    binds: binds,
+                    expr: expr,
+                }
+            }
+        }).collect();
+        (lhs, rhss)
+    }).collect();
+    let start = start.expect("need at least one nonterminal");
+    let fake_start = token::gensym("start");
+    rules.insert(fake_start, vec![Rhs {
+        syms: vec![Nonterminal(start)],
+        act: Action {
+            binds: vec![],
+            expr: cx.expr_unreachable(DUMMY_SP),
+        },
+    }]);
+    let grammar = Grammar {
+        rules: rules,
+        start: fake_start,
+    };
+    let r = lr1_machine(cx, &grammar, &types, token_ty, name,
+        |&ident, cx| {
+            cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
+        },
+        |act, cx, syms| {
+            let blk = cx.block(DUMMY_SP, vec![], Some(act.expr.clone()));
+            let args = act.binds.iter().map(|x| match *x {
+                Some(ref y) => y.clone(),
+                None => cx.pat_wild(DUMMY_SP),
+            }).collect();
+            (blk, args)
+        });
+    base::MacItems::new(Some(r).into_iter())
+}
+
+#[plugin_registrar]
+pub fn plugin_registrar(reg: &mut rustc::plugin::Registry) {
+    reg.register_syntax_extension(token::intern("parser"), base::SyntaxExtension::IdentTT(Box::new(expand_parser) as Box<base::IdentMacroExpander + 'static>, None));
 }

@@ -88,7 +88,7 @@ fn main() {
             // let arg_ids: Vec<_> = (0..syms.len()).map(|i|
             //     cx.pat_ident(DUMMY_SP, token::gensym_ident(&format!("arg{}", i)[]))).collect();
             let arg_ids = (0..syms.len()).map(|_| cx.pat_wild(DUMMY_SP)).collect();
-            (cx.block(DUMMY_SP, vec![], None), arg_ids)
+            (cx.block(DUMMY_SP, vec![], None), arg_ids, DUMMY_SP)
         },
     );
     println!("{}", syntax::print::pprust::item_to_string(&*x));

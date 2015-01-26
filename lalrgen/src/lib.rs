@@ -56,7 +56,7 @@ where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
       A: Ord + fmt::Show,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
-      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Block>, Vec<P<ast::Pat>>),
+      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Block>, Vec<P<ast::Pat>>, codemap::Span),
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
@@ -140,7 +140,7 @@ where T: Ord + fmt::Show + fmt::String,
         }
         let t = types.get(lhs).unwrap();
         for rhs in rhss.iter() {
-            let (ret, arg_pats) = to_block(&rhs.act, cx, &rhs.syms[]);
+            let (ret, arg_pats, span) = to_block(&rhs.act, cx, &rhs.syms[]);
             let args: Vec<_> = rhs.syms.iter().zip(arg_pats.into_iter()).map(|(s, pat)| ast::Arg {
                 ty: match *s {
                     Terminal(_) => token_ty.clone(),
@@ -150,8 +150,8 @@ where T: Ord + fmt::Show + fmt::String,
                 id: DUMMY_NODE_ID,
             }).collect();
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
-            let f = cx.item_fn(DUMMY_SP, fn_id, args, t.clone(), ret);
-            stmts.push(cx.stmt_item(DUMMY_SP, f));
+            let f = cx.item_fn(span, fn_id, args, t.clone(), ret);
+            stmts.push(cx.stmt_item(span, f));
         }
     }
     stmts.extend(goto_fn_ids.iter().map(|(lhs, id)| cx.stmt_item(DUMMY_SP, cx.item_fn(
@@ -274,6 +274,7 @@ fn expand_parser<'a>(
     struct Action {
         binds: Vec<Option<P<ast::Pat>>>,
         expr: P<ast::Expr>,
+        span: codemap::Span,
     }
 
     // These are hacks, necessary because of a bug in Rust deriving
@@ -315,6 +316,7 @@ fn expand_parser<'a>(
         parser.expect(&token::OpenDelim(token::Brace));
         let mut rhss = Vec::new();
         while !parser.check(&token::CloseDelim(token::Brace)) {
+            let lo = parser.span.lo;
             let (rule, binds): (Vec<_>, Vec<_>) = iter::Unfold::new((), |_| {
                 if parser.check(&token::FatArrow) {
                     return None;
@@ -348,14 +350,15 @@ fn expand_parser<'a>(
                 // `expr` may not be complete, so continue parsing until the comma or close-brace
                 parser.commit_expr(&*expr, &[token::Comma], &[token::CloseDelim(token::Brace)]);
             }
+            let sp = codemap::mk_sp(lo, parser.last_span.hi);
 
-            rhss.push((rule, binds, expr));
+            rhss.push((rule, binds, expr, sp));
         }
         parser.expect(&token::CloseDelim(token::Brace));
         rules.insert(lhs, rhss);
     }
     let mut rules: BTreeMap<ast::Name, Vec<_>> = rules.into_iter().map(|(lhs, rhss)| {
-        let rhss = rhss.into_iter().map(|(rule, binds, expr)| {
+        let rhss = rhss.into_iter().map(|(rule, binds, expr, span)| {
             // figure out which symbols in `rule` are nonterminals vs terminals
             let syms = rule.into_iter().map(|ident| {
                 if types.contains_key(&ident.name) {
@@ -369,6 +372,7 @@ fn expand_parser<'a>(
                 act: Action {
                     binds: binds,
                     expr: expr,
+                    span: span,
                 }
             }
         }).collect();
@@ -381,6 +385,7 @@ fn expand_parser<'a>(
         act: Action {
             binds: vec![],
             expr: cx.expr_unreachable(DUMMY_SP),
+            span: DUMMY_SP,
         },
     }]);
     let grammar = Grammar {
@@ -392,12 +397,12 @@ fn expand_parser<'a>(
             cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
         },
         |act, cx, syms| {
-            let blk = cx.block(DUMMY_SP, vec![], Some(act.expr.clone()));
+            let blk = cx.block(act.expr.span, vec![], Some(act.expr.clone()));
             let args = act.binds.iter().map(|x| match *x {
                 Some(ref y) => y.clone(),
                 None => cx.pat_wild(DUMMY_SP),
             }).collect();
-            (blk, args)
+            (blk, args, act.span)
         });
     base::MacItems::new(Some(r).into_iter())
 }

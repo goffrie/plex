@@ -43,15 +43,15 @@ fn variant(name: ast::Ident, tys: Vec<P<ast::Ty>> ) -> ast::Variant {
 }
 
 
-pub fn lr1_machine<T, N, A, FM, FA>(
+pub fn lr1_machine<'a, T, N, A, FM, FA>(
     cx: &mut base::ExtCtxt,
-    grammar: &Grammar<T, N, A>,
+    grammar: &'a Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
     token_ty: P<ast::Ty>,
     name: ast::Ident,
     mut to_pat: FM,
     mut to_block: FA,
-) -> P<ast::Item>
+) -> Result<P<ast::Item>, LR1Conflict<'a, T, N, A>>
 where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
       A: Ord + fmt::Show,
@@ -62,7 +62,7 @@ where T: Ord + fmt::Show + fmt::String,
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
     };
-    let table: LR1ParseTable<T, N, A> = grammar.lalr1();
+    let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1());
     let it_ty_id = token::gensym_ident("I");
     let it_ty = cx.ty_ident(DUMMY_SP, it_ty_id);
     let generics = ast::Generics {
@@ -261,7 +261,7 @@ where T: Ord + fmt::Show + fmt::String,
                                         vec![types.get(actual_start).unwrap().clone(),
                                              quote_ty!(cx, (Option<$token_ty>, &'static str))],
                                         vec![]));
-    cx.item_fn_poly(DUMMY_SP, name, args, out_ty, generics, body)
+    Ok(cx.item_fn_poly(DUMMY_SP, name, args, out_ty, generics, body))
 }
 
 fn expand_parser<'a>(
@@ -286,14 +286,36 @@ fn expand_parser<'a>(
 
     // These are hacks, necessary because of a bug in Rust deriving
     impl PartialEq for Action {
-        fn eq(&self, other: &Action) -> bool { unreachable!() }
+        fn eq(&self, _: &Action) -> bool { unreachable!() }
     }
     impl Eq for Action { }
     impl PartialOrd for Action {
-        fn partial_cmp(&self, other: &Action) -> Option<cmp::Ordering> { unreachable!() }
+        fn partial_cmp(&self, _: &Action) -> Option<cmp::Ordering> { unreachable!() }
     }
     impl Ord for Action {
-        fn cmp(&self, other: &Action) -> cmp::Ordering { unreachable!() }
+        fn cmp(&self, _: &Action) -> cmp::Ordering { unreachable!() }
+    }
+
+    // Pretty-print an item set, for error messages.
+    fn pretty(x: &ItemSet<ast::Ident, ast::Name, Action>, pad: &str) -> String {
+        let mut r = String::new();
+        let mut first = true;
+        for item in x.items.iter() {
+            if first {
+                first = false;
+            } else {
+                let _ = write!(&mut r, "\n{}", pad);
+            }
+            let _ = write!(&mut r, "{} ->", item.lhs);
+            for j in 0..item.pos {
+                let _ = write!(&mut r, " {}", item.rhs.syms[j]);
+            }
+            let _ = write!(&mut r, " •");
+            for j in item.pos..item.rhs.syms.len() {
+                let _ = write!(&mut r, " {}", item.rhs.syms[j]);
+            }
+        }
+        r
     }
 
     let mut parser = cx.new_parser_from_tts(&*tts);
@@ -440,6 +462,21 @@ fn expand_parser<'a>(
             }
             let blk = cx.block(act.span, vec![], Some(expr));
             (blk, args, act.span)
+        }).unwrap_or_else(|conflict| {
+            match conflict {
+                LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
+                    cx.span_err(sp, &*format!("reduce-reduce conflict:
+state: {}
+token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
+                    cx.span_err(r1.1.act.span, "conflicting rule");
+                    cx.span_fatal(r2.1.act.span, "conflicting rule")
+                }
+                LR1Conflict::ShiftReduce { state, token, rule } => {
+                    cx.span_fatal(rule.1.act.span, &*format!("shift-reduce conflict:
+state: {}
+token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")))
+                }
+            }
         });
     base::MacItems::new(Some(r).into_iter())
 }

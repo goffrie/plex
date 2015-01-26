@@ -224,13 +224,17 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     while parser.token != token::Eof {
         // parse '"regex" =>'
         let (re_str, _) = parser.parse_str(); // don't care what style of string literal
+        let sp = parser.last_span;
         let re = match Regex::new(re_str.as_slice()) {
             Ok(r) => r,
             Err(e) => {
-                cx.span_err(parser.last_span, format!("invalid regular expression: {:?}", e).as_slice());
+                cx.span_err(sp, &*format!("invalid regular expression: {:?}", e));
                 Regex::Null // dummy
             }
         };
+        if re.nullable() {
+            cx.span_err(sp, "token must not match the empty string");
+        }
 
         parser.expect(&token::FatArrow);
 

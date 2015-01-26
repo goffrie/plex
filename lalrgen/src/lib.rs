@@ -271,22 +271,29 @@ fn expand_parser<'a>(
     tts: Vec<ast::TokenTree>
 ) -> Box<base::MacResult + 'a> {
     #[derive(Show)]
+    enum Binding {
+        Pat(P<ast::Pat>),
+        Enum(codemap::Span, Vec<P<ast::Pat>>),
+        None,
+    }
+
+    #[derive(Show)]
     struct Action {
-        binds: Vec<Option<P<ast::Pat>>>,
+        binds: Vec<Binding>,
         expr: P<ast::Expr>,
         span: codemap::Span,
     }
 
     // These are hacks, necessary because of a bug in Rust deriving
     impl PartialEq for Action {
-        fn eq(&self, other: &Action) -> bool { true }
+        fn eq(&self, other: &Action) -> bool { unreachable!() }
     }
     impl Eq for Action { }
     impl PartialOrd for Action {
-        fn partial_cmp(&self, other: &Action) -> Option<cmp::Ordering> { Some(cmp::Ordering::Equal) }
+        fn partial_cmp(&self, other: &Action) -> Option<cmp::Ordering> { unreachable!() }
     }
     impl Ord for Action {
-        fn cmp(&self, other: &Action) -> cmp::Ordering { cmp::Ordering::Equal }
+        fn cmp(&self, other: &Action) -> cmp::Ordering { unreachable!() }
     }
 
     let mut parser = cx.new_parser_from_tts(&*tts);
@@ -321,13 +328,24 @@ fn expand_parser<'a>(
                 if parser.check(&token::FatArrow) {
                     return None;
                 }
+                let lo = parser.span.lo;
                 let name = parser.parse_ident();
                 let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
                     let r = parser.parse_pat();
                     parser.expect(&token::CloseDelim(token::Bracket));
-                    Some(r)
+                    Binding::Pat(r)
+                } else if parser.eat(&token::OpenDelim(token::Paren)) {
+                    let mut pats = vec![];
+                    while !parser.eat(&token::CloseDelim(token::Paren)) {
+                        pats.push(parser.parse_pat());
+                        if !parser.eat(&token::Comma) {
+                            parser.expect(&token::CloseDelim(token::Paren));
+                            break;
+                        }
+                    }
+                    Binding::Enum(codemap::mk_sp(lo, parser.last_span.hi), pats)
                 } else {
-                    None
+                    Binding::None
                 };
                 Some((name, bind))
             }).unzip();
@@ -397,11 +415,30 @@ fn expand_parser<'a>(
             cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
         },
         |act, cx, syms| {
-            let blk = cx.block(act.expr.span, vec![], Some(act.expr.clone()));
-            let args = act.binds.iter().map(|x| match *x {
-                Some(ref y) => y.clone(),
-                None => cx.pat_wild(DUMMY_SP),
-            }).collect();
+            let mut expr = act.expr.clone();
+            let mut args = vec![];
+            for (i, (x, sym)) in act.binds.iter().zip(syms.iter()).enumerate() {
+                args.push(match *x {
+                    Binding::Pat(ref y) => y.clone(),
+                    Binding::Enum(sp, ref pats) => {
+                        let id = token::gensym_ident(&*format!("s{}", i));
+                        let terminal = match *sym {
+                            Nonterminal(..) => {
+                                cx.span_err(sp, "can't bind enum case to a nonterminal");
+                                token::gensym_ident("error")
+                            }
+                            Terminal(x) => x
+                        };
+                        expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
+                            cx.arm(sp, vec![cx.pat(sp, ast::PatEnum(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
+                            cx.arm_unreachable(sp),
+                        ]);
+                        cx.pat_ident(sp, id)
+                    }
+                    Binding::None => cx.pat_wild(DUMMY_SP),
+                });
+            }
+            let blk = cx.block(act.span, vec![], Some(expr));
             (blk, args, act.span)
         });
     base::MacItems::new(Some(r).into_iter())

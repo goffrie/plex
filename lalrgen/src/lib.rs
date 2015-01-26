@@ -299,7 +299,7 @@ fn expand_parser<'a>(
     let mut rules = BTreeMap::new();
     let mut types = BTreeMap::new();
     let mut start = None;
-    while parser.token != token::Eof {
+    while !parser.check(&token::Eof) {
         // parse "LHS: Type {"
         let lhs = parser.parse_ident().name;
         if start.is_none() {
@@ -314,9 +314,9 @@ fn expand_parser<'a>(
         types.insert(lhs, ty);
         parser.expect(&token::OpenDelim(token::Brace));
         let mut rhss = Vec::new();
-        while parser.token != token::CloseDelim(token::Brace) {
+        while !parser.check(&token::CloseDelim(token::Brace)) {
             let (rule, binds): (Vec<_>, Vec<_>) = iter::Unfold::new((), |_| {
-                if parser.token == token::FatArrow {
+                if parser.check(&token::FatArrow) {
                     return None;
                 }
                 let name = parser.parse_ident();
@@ -338,7 +338,7 @@ fn expand_parser<'a>(
                 // don't need a comma for blocks...
                 classify::expr_is_simple_block(&*expr)
                 // or for the last arm
-                || parser.token == token::CloseDelim(token::Brace);
+                || parser.check(&token::CloseDelim(token::Brace));
 
             if optional_comma {
                 // consume optional comma

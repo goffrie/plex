@@ -7,12 +7,13 @@ extern crate lalr;
 extern crate syntax;
 extern crate rustc;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{iter, fmt, cmp};
 use std::fmt::Writer;
 use syntax::ptr::P;
 use syntax::{ast, owned_slice, codemap};
 use syntax::parse::{parser, token, classify};
+use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use lalr::*;
@@ -43,7 +44,7 @@ fn variant(name: ast::Ident, tys: Vec<P<ast::Ty>> ) -> ast::Variant {
 }
 
 
-pub fn lr1_machine<'a, T, N, A, FM, FA>(
+pub fn lr1_machine<'a, T, N, A, FM, FA, FR>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
@@ -51,18 +52,20 @@ pub fn lr1_machine<'a, T, N, A, FM, FA>(
     name: ast::Ident,
     mut to_pat: FM,
     mut to_expr: FA,
+    reduce_on: FR,
 ) -> Result<P<ast::Item>, LR1Conflict<'a, T, N, A>>
 where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
       A: Ord + fmt::Show,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
       FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<P<ast::Pat>>, codemap::Span),
+      FR: FnMut(&A, Option<&T>) -> bool,
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
     };
-    let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1());
+    let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1(reduce_on));
     let it_ty_id = token::gensym_ident("I");
     let it_ty = cx.ty_ident(DUMMY_SP, it_ty_id);
     let u32_ty = quote_ty!(cx, u32);
@@ -311,6 +314,8 @@ fn expand_parser<'a>(
         binds: Vec<Binding>,
         expr: P<ast::Expr>,
         span: codemap::Span,
+        exclusions: BTreeSet<String>,
+        exclude_eof: bool,
     }
 
     // These are hacks, necessary because of a bug in Rust deriving
@@ -374,6 +379,23 @@ fn expand_parser<'a>(
         parser.expect(&token::OpenDelim(token::Brace));
         let mut rhss = Vec::new();
         while !parser.check(&token::CloseDelim(token::Brace)) {
+            let mut exclusions = BTreeSet::new();
+            while parser.check(&token::Pound) {
+                // attributes
+                let attr = parser.parse_attribute(false); // don't allow "#![..]" syntax
+                match attr.node.value.node {
+                    ast::MetaList(ref name, ref tokens) if name == &"no_reduce" => {
+                        for token in tokens.iter() {
+                            if let ast::MetaWord(ref name) = token.node {
+                                exclusions.insert(name.to_string());
+                            } else {
+                                parser.span_err(token.span, "not the name of a token");
+                            }
+                        }
+                    }
+                    _ => parser.span_err(attr.span, "unknown attribute"),
+                }
+            }
             let lo = parser.span.lo;
             let (rule, binds): (Vec<_>, Vec<_>) = iter::Unfold::new((), |_| {
                 if parser.check(&token::FatArrow) {
@@ -421,13 +443,19 @@ fn expand_parser<'a>(
             }
             let sp = codemap::mk_sp(lo, parser.last_span.hi);
 
-            rhss.push((rule, binds, expr, sp));
+            rhss.push((rule, Action {
+                binds: binds,
+                expr: expr,
+                span: sp,
+                exclusions: exclusions,
+                exclude_eof: false,
+            }));
         }
         parser.expect(&token::CloseDelim(token::Brace));
         rules.insert(lhs, rhss);
     }
     let mut rules: BTreeMap<ast::Name, Vec<_>> = rules.into_iter().map(|(lhs, rhss)| {
-        let rhss = rhss.into_iter().map(|(rule, binds, expr, span)| {
+        let rhss = rhss.into_iter().map(|(rule, act)| {
             // figure out which symbols in `rule` are nonterminals vs terminals
             let syms = rule.into_iter().map(|ident| {
                 if types.contains_key(&ident.name) {
@@ -438,11 +466,7 @@ fn expand_parser<'a>(
             }).collect();
             Rhs {
                 syms: syms,
-                act: Action {
-                    binds: binds,
-                    expr: expr,
-                    span: span,
-                }
+                act: act,
             }
         }).collect();
         (lhs, rhss)
@@ -455,6 +479,8 @@ fn expand_parser<'a>(
             binds: vec![],
             expr: cx.expr_unreachable(DUMMY_SP),
             span: DUMMY_SP,
+            exclusions: BTreeSet::new(),
+            exclude_eof: false,
         },
     }]);
     let grammar = Grammar {
@@ -490,7 +516,14 @@ fn expand_parser<'a>(
                 });
             }
             (expr, args, act.span)
-        }).unwrap_or_else(|conflict| {
+        },
+        |act, token| {
+            match token {
+                Some(id) => !act.exclusions.contains(id.as_str()),
+                None => !act.exclude_eof,
+            }
+        }
+        ).unwrap_or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
                     cx.span_err(sp, &*format!("reduce-reduce conflict:

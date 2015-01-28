@@ -371,14 +371,12 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
                     }
                 }),
             ],
-            Some(quote_expr!(cx,
-                if let Some(($which, $remaining)) = $last_match {
-                    let $text_pat = $input.slice_to($input.subslice_offset($remaining));
-                    *$input = $remaining;
-                    Some($compute_result)
-                } else {
-                    None
-                }))
+            Some(cx.expr(DUMMY_SP, ast::ExprIfLet(quote_pat!(cx, Some(($which, $remaining))), cx.expr_ident(DUMMY_SP, last_match),
+                cx.block(DUMMY_SP, vec![
+                    quote_stmt!(cx, let $text_pat = $input.slice_to($input.subslice_offset($remaining));),
+                    quote_stmt!(cx, *$input = $remaining;),
+                ], Some(cx.expr_some(DUMMY_SP, compute_result))),
+                Some(cx.expr_none(DUMMY_SP)))))
         )
     );
     base::MacItems::new(single_item(final_fn))

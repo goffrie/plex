@@ -45,6 +45,18 @@ fn variant(name: ast::Ident, tys: Vec<P<ast::Ty>> ) -> ast::Variant {
 }
 
 
+fn most_frequent<T: Ord, I: Iterator<Item=T>>(mut it: I) -> Option<T> {
+    let mut freq = BTreeMap::new();
+    for x in it {
+        *freq.entry(x).get().unwrap_or_else(|v| v.insert(0)) += 1;
+    }
+    freq.into_iter().fold(None, |best, (x, f)| match best {
+        None => Some((x, f)),
+        Some((x2, f2)) => if f > f2 { Some((x, f)) } else { Some((x2, f2)) },
+    }).map(|(x, _)| x)
+}
+
+
 pub fn lr1_machine<'a, T, N, A, FM, FA, FR>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
@@ -206,22 +218,33 @@ where T: Ord + fmt::Show + fmt::String,
                     cx.expr_call(DUMMY_SP, quote_expr!(cx, $st_ty_id::$lvariant), vec![result]),
                 ])]
             )));
+            let goto_fn = *goto_fn_ids.get(lhs).unwrap();
+            reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_id);));
             let block = cx.block(rspan, reduce_stmts, None);
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
             let f = cx.item_fn(span, fn_id, args, quote_ty!(cx, ()), block);
             stmts.push(cx.stmt_item(span, f));
         }
     }
-    stmts.extend(goto_fn_ids.iter().map(|(lhs, id)| cx.stmt_item(DUMMY_SP, cx.item_fn(
-        DUMMY_SP, *id,
-        vec![cx.arg(DUMMY_SP, state_id, u32_ty.clone())],
-        u32_ty.clone(),
-        cx.block_expr(cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id),
-            table.states.iter().enumerate().filter_map(|(ix, state)| state.goto.get(lhs).map(|&dest|
-                cx.arm(DUMMY_SP, vec![pat_u32(cx, ix as u32)],
-                lit_u32(cx, dest as u32))))
-            .chain(Some(quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },)).into_iter())
-            .collect()))))));
+    for (lhs, id) in goto_fn_ids.iter() {
+        let most_freq = match most_frequent(table.states.iter().filter_map(|state| state.goto.get(lhs))) {
+            Some(&x) => x,
+            None => continue,
+        };
+        let mut arms = vec![];
+        for (ix, state) in table.states.iter().enumerate() {
+            if let Some(&dest) = state.goto.get(lhs) {
+                if dest != most_freq {
+                    arms.push(cx.arm(DUMMY_SP, vec![pat_u32(cx, ix as u32)], lit_u32(cx, dest as u32)));
+                }
+            }
+        }
+        arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], lit_u32(cx, most_freq as u32)));
+        let f = cx.item_fn(DUMMY_SP, *id, vec![
+            cx.arg(DUMMY_SP, state_id, u32_ty.clone())
+        ], u32_ty.clone(), cx.block_expr(cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id), arms)));
+        stmts.push(cx.stmt_item(DUMMY_SP, f));
+    }
     stmts.push(cx.stmt_let(DUMMY_SP, true, stack_id, quote_expr!(cx, Vec::new())));
     stmts.push(cx.stmt_let(DUMMY_SP, true, state_id, quote_expr!(cx, 0)));
     stmts.push(cx.stmt_let(DUMMY_SP, true, token_id, quote_expr!(cx, $it_arg_id.next())));
@@ -253,12 +276,10 @@ where T: Ord + fmt::Show + fmt::String,
                     }
                     let block = match *action {
                         LRAction::Shift(dest) => lit_u32(cx, dest as u32),
-                        LRAction::Reduce(lhs, rhs) => {
+                        LRAction::Reduce(_, rhs) => {
                             let reduce_fn = *rule_fn_ids.get(&(rhs as *const _)).unwrap();
-                            let goto_fn = *goto_fn_ids.get(lhs).unwrap();
                             quote_expr!(cx, {
                                 $reduce_fn(&mut $stack_id, &mut $state_id);
-                                $state_id = $goto_fn($state_id);
                                 continue
                             })
                         }

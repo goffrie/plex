@@ -16,6 +16,7 @@ use syntax::parse::{parser, token, classify};
 use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
+use syntax::diagnostic::FatalError;
 use lalr::*;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
@@ -529,8 +530,9 @@ fn expand_parser<'a>(
                     cx.span_err(sp, &*format!("reduce-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
-                    cx.span_err(r1.1.act.span, "conflicting rule");
-                    cx.span_fatal(r2.1.act.span, "conflicting rule")
+                    cx.span_note(r1.1.act.span, "conflicting rule");
+                    cx.span_note(r2.1.act.span, "conflicting rule");
+                    panic!(FatalError)
                 }
                 LR1Conflict::ShiftReduce { state, token, rule } => {
                     cx.span_fatal(rule.1.act.span, &*format!("shift-reduce conflict:

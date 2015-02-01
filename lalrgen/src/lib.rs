@@ -56,6 +56,24 @@ fn most_frequent<T: Ord, I: Iterator<Item=T>>(mut it: I) -> Option<T> {
     }).map(|(x, _)| x)
 }
 
+fn expected_one_of<S: fmt::String>(xs: &[S]) -> String {
+    let mut err_msg: String = "expected".to_string();
+    for (i, x) in xs.iter().enumerate() {
+        if i == 0 {
+            let _ = write!(&mut err_msg, " ");
+        } else if i == xs.len()-1 {
+            if i == 1 {
+                let _ = write!(&mut err_msg, " or ");
+            } else {
+                let _ = write!(&mut err_msg, ", or ");
+            }
+        } else {
+            let _ = write!(&mut err_msg, ", ");
+        }
+        let _ = write!(&mut err_msg, "{}", x);
+    }
+    err_msg
+}
 
 pub fn lr1_machine<'a, T, N, A, FM, FA, FR>(
     cx: &mut base::ExtCtxt,
@@ -227,76 +245,76 @@ where T: Ord + fmt::Show + fmt::String,
         }
     }
     for (lhs, id) in goto_fn_ids.iter() {
-        let most_freq = match most_frequent(table.states.iter().filter_map(|state| state.goto.get(lhs))) {
-            Some(&x) => x,
-            None => continue,
-        };
-        let mut arms = vec![];
-        for (ix, state) in table.states.iter().enumerate() {
-            if let Some(&dest) = state.goto.get(lhs) {
-                if dest != most_freq {
-                    arms.push(cx.arm(DUMMY_SP, vec![pat_u32(cx, ix as u32)], lit_u32(cx, dest as u32)));
+        let expr = if let Some(&most_freq) = most_frequent(table.states.iter()
+                                               .filter_map(|state| state.goto.get(lhs))) {
+            let mut arms = vec![];
+            for (ix, state) in table.states.iter().enumerate() {
+                if let Some(&dest) = state.goto.get(lhs) {
+                    if dest != most_freq {
+                        arms.push(cx.arm(DUMMY_SP, vec![pat_u32(cx, ix as u32)], lit_u32(cx, dest as u32)));
+                    }
                 }
             }
-        }
-        arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], lit_u32(cx, most_freq as u32)));
+            arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], lit_u32(cx, most_freq as u32)));
+            cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id), arms)
+        } else {
+            // This shouldn't normally happen, but it can when `lhs` is unused in the
+            // grammar.
+            quote_expr!(cx, unreachable!())
+        };
         let f = cx.item_fn(DUMMY_SP, *id, vec![
             cx.arg(DUMMY_SP, state_id, u32_ty.clone())
-        ], u32_ty.clone(), cx.block_expr(cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id), arms)));
+        ], u32_ty.clone(), cx.block_expr(expr));
         stmts.push(cx.stmt_item(DUMMY_SP, f));
     }
-    stmts.push(cx.stmt_let(DUMMY_SP, true, stack_id, quote_expr!(cx, Vec::new())));
+    stmts.push(cx.stmt_let(DUMMY_SP, true, stack_id, quote_expr!(cx, ::std::vec::Vec::new())));
     stmts.push(cx.stmt_let(DUMMY_SP, true, state_id, quote_expr!(cx, 0)));
     stmts.push(cx.stmt_let(DUMMY_SP, true, token_id, quote_expr!(cx, $it_arg_id.next())));
     stmts.push(cx.stmt_expr(cx.expr_loop(DUMMY_SP, cx.block(DUMMY_SP, vec![
         cx.stmt_let(DUMMY_SP, false, next_state_id, cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id),
             table.states.iter().enumerate().map(|(ix, state)| {
-                let mut err_msg: String = "expected".to_string();
-                let count = state.lookahead.len() + if state.eof.is_some() { 1 } else { 0 };
-                let mut arms: Vec<_> = state.lookahead.iter()
-                .map(|(tok, action)| (Some(tok), action))
-                .chain(state.eof.iter().map(|action| (None, action)))
-                .enumerate()
-                .map(|(i, (maybe_tok, action))| {
-                    if i == 0 {
-                        let _ = write!(&mut err_msg, " ");
-                    } else if i == count-1 {
-                        if i == 1 {
-                            let _ = write!(&mut err_msg, " or ");
-                        } else {
-                            let _ = write!(&mut err_msg, ", or ");
-                        }
-                    } else {
-                        let _ = write!(&mut err_msg, ", ");
-                    }
-                    if let Some(t) = maybe_tok {
-                        let _ = write!(&mut err_msg, "`{}`", t);
-                    } else {
-                        let _ = write!(&mut err_msg, "end of file");
-                    }
-                    let block = match *action {
+                let mut arms = vec![];
+                let mut reduce_arms = BTreeMap::new();
+                let mut expected = vec![];
+                for (&tok, action) in state.lookahead.iter() {
+                    expected.push(format!("`{}`", tok));
+                    let pat = cx.pat_some(DUMMY_SP, to_pat(tok, cx));
+                    let arm_expr = match *action {
                         LRAction::Shift(dest) => lit_u32(cx, dest as u32),
                         LRAction::Reduce(_, rhs) => {
-                            let reduce_fn = *rule_fn_ids.get(&(rhs as *const _)).unwrap();
-                            quote_expr!(cx, {
-                                $reduce_fn(&mut $stack_id, &mut $state_id);
-                                continue
-                            })
+                            reduce_arms.entry(rhs as *const _).get().unwrap_or_else(|v| v.insert(vec![])).push(pat);
+                            continue;
+                        }
+                        LRAction::Accept => unreachable!(),
+                    };
+                    arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr))
+                }
+                if let Some(ref action) = state.eof {
+                    expected.push("end of file".to_string());
+                    let pat = cx.pat_none(DUMMY_SP);
+                    match *action {
+                        LRAction::Shift(_) => unreachable!(),
+                        LRAction::Reduce(_, rhs) => {
+                            reduce_arms.entry(rhs as *const _).get().unwrap_or_else(|v| v.insert(vec![])).push(pat);
                         }
                         LRAction::Accept => {
                             let variant = *st_variant_ids.get(actual_start).unwrap();
-                            quote_expr!(cx, match $stack_id.pop().unwrap() {
+                            let arm_expr = quote_expr!(cx, match $stack_id.pop().unwrap() {
                                 (_, $st_ty_id::$variant(x)) => return Ok(x),
                                 _ => unsafe { ::std::intrinsics::unreachable() }
-                            })
+                            });
+                            arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
                         }
                     };
-                    cx.arm(DUMMY_SP, vec![match maybe_tok {
-                        Some(&tok) => cx.pat_some(DUMMY_SP, to_pat(tok, cx)),
-                        None => cx.pat_none(DUMMY_SP),
-                    }], block)
-                }).collect();
-                let err_msg_lit = cx.expr_str(DUMMY_SP, token::intern_and_get_ident(&err_msg[]));
+                }
+                for (rhs_ptr, pats) in reduce_arms.into_iter() {
+                    let reduce_fn = *rule_fn_ids.get(&rhs_ptr).unwrap();
+                    arms.push(cx.arm(DUMMY_SP, pats, quote_expr!(cx, {
+                        $reduce_fn(&mut $stack_id, &mut $state_id);
+                        continue
+                    })));
+                }
+                let err_msg_lit = cx.expr_str(DUMMY_SP, token::intern_and_get_ident(&*expected_one_of(&*expected)));
                 arms.push(quote_arm!(cx, _ => return Err(($token_id, $err_msg_lit)),));
                 cx.arm(DUMMY_SP,
                     vec![pat_u32(cx, ix as u32)],

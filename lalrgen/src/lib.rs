@@ -247,15 +247,22 @@ where T: Ord + fmt::Show + fmt::String,
     for (lhs, id) in goto_fn_ids.iter() {
         let expr = if let Some(&most_freq) = most_frequent(table.states.iter()
                                                .filter_map(|state| state.goto.get(lhs))) {
-            let mut arms = vec![];
+            let most_freq = most_freq as u32;
+            let mut pats_by_dest = BTreeMap::new();
             for (ix, state) in table.states.iter().enumerate() {
                 if let Some(&dest) = state.goto.get(lhs) {
+                    let dest = dest as u32;
                     if dest != most_freq {
-                        arms.push(cx.arm(DUMMY_SP, vec![pat_u32(cx, ix as u32)], lit_u32(cx, dest as u32)));
+                        pats_by_dest.entry(dest).get()
+                            .unwrap_or_else(|v| v.insert(vec![]))
+                            .push(pat_u32(cx, ix as u32));
                     }
                 }
             }
-            arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], lit_u32(cx, most_freq as u32)));
+            let mut arms: Vec<_> = pats_by_dest.into_iter()
+                .map(|(dest, pats)| cx.arm(DUMMY_SP, pats, lit_u32(cx, dest)))
+                .collect();
+            arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], lit_u32(cx, most_freq)));
             cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id), arms)
         } else {
             // This shouldn't normally happen, but it can when `lhs` is unused in the

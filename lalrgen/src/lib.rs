@@ -24,6 +24,9 @@ use syntax::ast::DUMMY_NODE_ID;
 fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyU32)))
 }
+fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
+    cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyUs(false))))
+}
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
@@ -89,7 +92,7 @@ where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
       A: Ord + fmt::Show,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
-      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<P<ast::Pat>>, codemap::Span),
+      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
       FR: FnMut(&A, Option<&T>) -> bool,
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
@@ -154,6 +157,7 @@ where T: Ord + fmt::Show + fmt::String,
         .map(|(i, lhs)| (lhs, token::gensym_ident(&format!("goto_{}", i)[])))
         .collect();
     let stack_id = token::gensym_ident("stack");
+    let state_stack_id = token::gensym_ident("state_stack");
     let state_id = token::gensym_ident("state");
     let token_id = token::gensym_ident("token");
     let next_state_id = token::gensym_ident("next_state");
@@ -171,10 +175,10 @@ where T: Ord + fmt::Show + fmt::String,
     })));
     let stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
         cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
-    ], vec![], vec![cx.ty(DUMMY_SP, ast::TyTup(vec![
-        u32_ty.clone(),
-        cx.ty_ident(DUMMY_SP, st_ty_id),
-    ]))], vec![]));
+    ], vec![], vec![cx.ty_ident(DUMMY_SP, st_ty_id)], vec![]));
+    let state_stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
+        cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
+    ], vec![], vec![u32_ty.clone()], vec![]));
     for (lhs, rhss) in grammar.rules.iter() {
         if *lhs == grammar.start {
             continue;
@@ -186,6 +190,10 @@ where T: Ord + fmt::Show + fmt::String,
                 pat: cx.pat_ident(DUMMY_SP, stack_id),
                 id: DUMMY_NODE_ID,
             }, ast::Arg {
+                ty: cx.ty_rptr(DUMMY_SP, state_stack_ty.clone(), None, ast::MutMutable),
+                pat: cx.pat_ident(DUMMY_SP, state_stack_id),
+                id: DUMMY_NODE_ID,
+            }, ast::Arg {
                 ty: cx.ty_rptr(DUMMY_SP, u32_ty.clone(), None, ast::MutMutable),
                 pat: cx.pat_ident(DUMMY_SP, state_id),
                 id: DUMMY_NODE_ID,
@@ -193,51 +201,52 @@ where T: Ord + fmt::Show + fmt::String,
             let mut reduce_stmts: Vec<_> =
             rhs.syms.iter()
             .zip(arg_pats.into_iter())
-            .enumerate()
             .rev()
-            .map(|(i, (sym, pat))| {
-                // FIXME: deduplicate this code
-                let variant = match *sym {
-                    Terminal(_) => st_token_id,
-                    Nonterminal(ref n) => *st_variant_ids.get(n).unwrap(),
-                };
-                let arm = if i == 0 {
-                    quote_arm!(cx, Some((prev, $st_ty_id::$variant(x))) => {
-                        *$state_id = prev;
-                        x
-                    })
-                } else {
-                    quote_arm!(cx, Some((_, $st_ty_id::$variant(x))) => x,)
-                };
-                let local = P(ast::Local {
-                    pat: pat,
-                    ty: Some(match *sym {
-                        Terminal(_) => token_ty.clone(),
-                        Nonterminal(ref n) => types.get(n).unwrap().clone(),
-                    }),
-                    init: Some(quote_expr!(cx, match $stack_id.pop() {
-                        $arm
-                        _ => unsafe { ::std::intrinsics::unreachable() }
-                    })),
-                    id: DUMMY_NODE_ID,
-                    span: DUMMY_SP,
-                    source: ast::LocalLet,
-                });
-                P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
+            .map(|(sym, maybe_pat)| match maybe_pat {
+                Some(pat) => {
+                    // FIXME: deduplicate this code
+                    let variant = match *sym {
+                        Terminal(_) => st_token_id,
+                        Nonterminal(ref n) => *st_variant_ids.get(n).unwrap(),
+                    };
+                    let local = P(ast::Local {
+                        pat: pat,
+                        ty: Some(match *sym {
+                            Terminal(_) => token_ty.clone(),
+                            Nonterminal(ref n) => types.get(n).unwrap().clone(),
+                        }),
+                        init: Some(quote_expr!(cx, match $stack_id.pop() {
+                            Some($st_ty_id::$variant(x)) => x,
+                            _ => unsafe { ::std::intrinsics::unreachable() }
+                        })),
+                        id: DUMMY_NODE_ID,
+                        span: DUMMY_SP,
+                        source: ast::LocalLet,
+                    });
+                    P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
+                }
+                None => cx.stmt_expr(cx.expr_method_call(DUMMY_SP,
+                                                         cx.expr_ident(DUMMY_SP, stack_id),
+                                                         cx.ident_of("pop"),
+                                                         vec![])),
             }).collect();
+            if rhs.syms.len() > 1 {
+                let len_minus_one = lit_usize(cx, rhs.syms.len() - 1);
+                // XXX: Annoying syntax :(
+                reduce_stmts.push(quote_stmt!(cx, match $state_stack_id.len() - $len_minus_one { x => unsafe { $state_stack_id.set_len(x) } };));
+            } else if rhs.syms.len() == 0 {
+                reduce_stmts.push(quote_stmt!(cx, $state_stack_id.push(*$state_id);));
+            }
+            let goto_fn = *goto_fn_ids.get(lhs).unwrap();
+            reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_stack_id.last().unwrap());));
             let rspan = result.span;
             let lvariant = *st_variant_ids.get(lhs).unwrap();
             reduce_stmts.push(cx.stmt_expr(cx.expr_method_call(
                 DUMMY_SP,
                 quote_expr!(cx, $stack_id),
                 cx.ident_of("push"),
-                vec![cx.expr_tuple(DUMMY_SP, vec![
-                    quote_expr!(cx, *$state_id),
-                    cx.expr_call(DUMMY_SP, quote_expr!(cx, $st_ty_id::$lvariant), vec![result]),
-                ])]
+                vec![cx.expr_call(DUMMY_SP, quote_expr!(cx, $st_ty_id::$lvariant), vec![result])]
             )));
-            let goto_fn = *goto_fn_ids.get(lhs).unwrap();
-            reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_id);));
             let block = cx.block(rspan, reduce_stmts, None);
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
             let f = cx.item_fn(span, fn_id, args, quote_ty!(cx, ()), block);
@@ -275,6 +284,7 @@ where T: Ord + fmt::Show + fmt::String,
         stmts.push(cx.stmt_item(DUMMY_SP, f));
     }
     stmts.push(cx.stmt_let(DUMMY_SP, true, stack_id, quote_expr!(cx, ::std::vec::Vec::new())));
+    stmts.push(cx.stmt_let(DUMMY_SP, true, state_stack_id, quote_expr!(cx, ::std::vec::Vec::new())));
     stmts.push(cx.stmt_let(DUMMY_SP, true, state_id, quote_expr!(cx, 0)));
     stmts.push(cx.stmt_let(DUMMY_SP, true, token_id, quote_expr!(cx, $it_arg_id.next())));
     stmts.push(cx.stmt_expr(cx.expr_loop(DUMMY_SP, cx.block(DUMMY_SP, vec![
@@ -307,7 +317,7 @@ where T: Ord + fmt::Show + fmt::String,
                         LRAction::Accept => {
                             let variant = *st_variant_ids.get(actual_start).unwrap();
                             let arm_expr = quote_expr!(cx, match $stack_id.pop().unwrap() {
-                                (_, $st_ty_id::$variant(x)) => return Ok(x),
+                                $st_ty_id::$variant(x) => return Ok(x),
                                 _ => unsafe { ::std::intrinsics::unreachable() }
                             });
                             arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
@@ -317,7 +327,7 @@ where T: Ord + fmt::Show + fmt::String,
                 for (rhs_ptr, pats) in reduce_arms.into_iter() {
                     let reduce_fn = *rule_fn_ids.get(&rhs_ptr).unwrap();
                     arms.push(cx.arm(DUMMY_SP, pats, quote_expr!(cx, {
-                        $reduce_fn(&mut $stack_id, &mut $state_id);
+                        $reduce_fn(&mut $stack_id, &mut $state_stack_id, &mut $state_id);
                         continue
                     })));
                 }
@@ -328,7 +338,8 @@ where T: Ord + fmt::Show + fmt::String,
                     cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, token_id),
                     arms))
             }).chain(Some(quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },)).into_iter()).collect())),
-        quote_stmt!(cx, $stack_id.push(($state_id, $st_ty_id::$st_token_id($token_id.unwrap())));),
+        quote_stmt!(cx, $stack_id.push($st_ty_id::$st_token_id($token_id.unwrap()));),
+        quote_stmt!(cx, $state_stack_id.push($state_id);),
         quote_stmt!(cx, $token_id = $it_arg_id.next();),
         quote_stmt!(cx, $state_id = $next_state_id;),
     ], None))));
@@ -543,7 +554,7 @@ fn expand_parser<'a>(
             let mut args = vec![];
             for (i, (x, sym)) in act.binds.iter().zip(syms.iter()).enumerate() {
                 args.push(match *x {
-                    Binding::Pat(ref y) => y.clone(),
+                    Binding::Pat(ref y) => Some(y.clone()),
                     Binding::Enum(sp, ref pats) => {
                         let id = token::gensym_ident(&*format!("s{}", i));
                         let terminal = match *sym {
@@ -557,9 +568,9 @@ fn expand_parser<'a>(
                             cx.arm(sp, vec![cx.pat(sp, ast::PatEnum(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
                             quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },),
                         ]);
-                        cx.pat_ident(sp, id)
+                        Some(cx.pat_ident(sp, id))
                     }
-                    Binding::None => cx.pat_wild(DUMMY_SP),
+                    Binding::None => None,
                 });
             }
             (expr, args, act.span)

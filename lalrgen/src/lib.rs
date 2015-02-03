@@ -78,7 +78,7 @@ fn expected_one_of<S: fmt::String>(xs: &[S]) -> String {
     err_msg
 }
 
-pub fn lr1_machine<'a, T, N, A, FM, FA, FR>(
+pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
@@ -87,6 +87,7 @@ pub fn lr1_machine<'a, T, N, A, FM, FA, FR>(
     mut to_pat: FM,
     mut to_expr: FA,
     reduce_on: FR,
+    priority_of: FO,
 ) -> Result<P<ast::Item>, LR1Conflict<'a, T, N, A>>
 where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
@@ -94,12 +95,13 @@ where T: Ord + fmt::Show + fmt::String,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
       FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
       FR: FnMut(&A, Option<&T>) -> bool,
+      FO: FnMut(&A, Option<&T>) -> i32,
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
     };
-    let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1(reduce_on));
+    let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1(reduce_on, priority_of));
     let it_ty_id = token::gensym_ident("I");
     let it_ty = cx.ty_ident(DUMMY_SP, it_ty_id);
     let u32_ty = quote_ty!(cx, u32);
@@ -374,6 +376,7 @@ fn expand_parser<'a>(
         span: codemap::Span,
         exclusions: BTreeSet<String>,
         exclude_eof: bool,
+        priority: i32,
     }
 
     // These are hacks, necessary because of a bug in Rust deriving
@@ -438,6 +441,7 @@ fn expand_parser<'a>(
         let mut rhss = Vec::new();
         while !parser.check(&token::CloseDelim(token::Brace)) {
             let mut exclusions = BTreeSet::new();
+            let mut priority = 0;
             while parser.check(&token::Pound) {
                 // attributes
                 let attr = parser.parse_attribute(false); // don't allow "#![..]" syntax
@@ -450,6 +454,9 @@ fn expand_parser<'a>(
                                 parser.span_err(token.span, "not the name of a token");
                             }
                         }
+                    }
+                    ast::MetaWord(ref name) if name == &"overriding" => {
+                        priority = 1;
                     }
                     _ => parser.span_err(attr.span, "unknown attribute"),
                 }
@@ -507,6 +514,7 @@ fn expand_parser<'a>(
                 span: sp,
                 exclusions: exclusions,
                 exclude_eof: false,
+                priority: priority,
             }));
         }
         parser.expect(&token::CloseDelim(token::Brace));
@@ -539,6 +547,7 @@ fn expand_parser<'a>(
             span: DUMMY_SP,
             exclusions: BTreeSet::new(),
             exclude_eof: false,
+            priority: -1,
         },
     }]);
     let grammar = Grammar {
@@ -580,7 +589,8 @@ fn expand_parser<'a>(
                 Some(id) => !act.exclusions.contains(id.as_str()),
                 None => !act.exclude_eof,
             }
-        }
+        },
+        |act, _| act.priority
         ).unwrap_or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {

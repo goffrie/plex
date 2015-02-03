@@ -93,7 +93,7 @@ where T: Ord + fmt::Show + fmt::String,
       N: Ord + fmt::Show,
       A: Ord + fmt::Show,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
-      FA: FnMut(&A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
+      FA: FnMut(&N, &A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
       FR: FnMut(&A, Option<&T>) -> bool,
       FO: FnMut(&A, Option<&T>) -> i32,
 {
@@ -186,7 +186,7 @@ where T: Ord + fmt::Show + fmt::String,
             continue;
         }
         for rhs in rhss.iter() {
-            let (result, arg_pats, span) = to_expr(&rhs.act, cx, &rhs.syms[]);
+            let (result, arg_pats, span) = to_expr(lhs, &rhs.act, cx, &rhs.syms[]);
             let args = vec![ast::Arg {
                 ty: cx.ty_rptr(DUMMY_SP, stack_ty.clone(), None, ast::MutMutable),
                 pat: cx.pat_ident(DUMMY_SP, stack_id),
@@ -249,6 +249,7 @@ where T: Ord + fmt::Show + fmt::String,
                 cx.ident_of("push"),
                 vec![cx.expr_call(DUMMY_SP, quote_expr!(cx, $st_ty_id::$lvariant), vec![result])]
             )));
+
             let block = cx.block(rspan, reduce_stmts, None);
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
             let f = cx.item_fn(span, fn_id, args, quote_ty!(cx, ()), block);
@@ -391,6 +392,14 @@ fn expand_parser<'a>(
         fn cmp(&self, _: &Action) -> cmp::Ordering { unreachable!() }
     }
 
+    fn pretty_rule(lhs: ast::Name, syms: &[Symbol<ast::Ident, ast::Name>]) -> String {
+        let mut r = String::new();
+        let _ = write!(&mut r, "{} ->", lhs);
+        for sym in syms.iter() {
+            let _ = write!(&mut r, " {}", sym);
+        }
+        r
+    }
     // Pretty-print an item set, for error messages.
     fn pretty(x: &ItemSet<ast::Ident, ast::Name, Action>, pad: &str) -> String {
         let mut r = String::new();
@@ -558,7 +567,7 @@ fn expand_parser<'a>(
         |&ident, cx| {
             cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
         },
-        |act, cx, syms| {
+        |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
             let mut args = vec![];
             for (i, (x, sym)) in act.binds.iter().zip(syms.iter()).enumerate() {
@@ -582,6 +591,15 @@ fn expand_parser<'a>(
                     Binding::None => None,
                 });
             }
+
+            // XXX: should be a cargo feature (?)
+            if false {
+                let rule_str = pretty_rule(*lhs, syms);
+                let rule_str = &*rule_str;
+                expr = cx.expr_block(
+                    cx.block(DUMMY_SP, vec![quote_stmt!(cx, println!("reduce by {}", $rule_str);)], Some(expr)));
+            }
+
             (expr, args, act.span)
         },
         |act, token| {

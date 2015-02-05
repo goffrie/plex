@@ -7,6 +7,7 @@ extern crate regex_dfa;
 extern crate syntax;
 extern crate rustc;
 
+use std::iter;
 use syntax::ptr::P;
 use syntax::{codemap, ast, abi, owned_slice};
 use syntax::parse::{self, parser, token, classify};
@@ -263,7 +264,15 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
             parser.commit_expr(&*expr, &[token::Comma], &[token::Eof]);
         }
 
-        arms.push((Dfa::from_regex(re), expr));
+        let (dfa, map) = Dfa::from_derivatives(vec![re, Regex::Null]);
+        let mut accepting: Vec<_> = iter::repeat(false).take(dfa.transitions.len()).collect();
+        for (re, ix) in map.into_iter() {
+            if re.nullable() {
+                accepting[ix as usize] = true;
+            }
+        }
+
+        arms.push(((dfa, accepting), expr));
     }
 
     let dfa_transition_fns: Vec<_> = (0..arms.len())
@@ -274,7 +283,7 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
         .collect();
 
     let mut helpers = Vec::new();
-    for (i, &(ref dfa, _)) in arms.iter().enumerate() {
+    for (i, &((ref dfa, ref accepting), _)) in arms.iter().enumerate() {
         helpers.push(P(dfagen(dfa, dfa_transition_fns[i], ast::Visibility::Inherited, sp)));
         helpers.push(cx.item_fn(
             DUMMY_SP,
@@ -288,8 +297,8 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
                               cx.expr_ident(DUMMY_SP, token::str_to_ident("state")),
                               vec![
                                 cx.arm(DUMMY_SP,
-                                       dfa.transitions.iter().enumerate()
-                                        .filter(|&(_, x)| x.accepting)
+                                       accepting.iter().enumerate()
+                                        .filter(|&(_, &a)| a)
                                         .map(|(i, _)|
                                                 cx.pat_lit(DUMMY_SP,
                                                            cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64,

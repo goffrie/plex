@@ -9,7 +9,7 @@ extern crate rustc;
 
 use syntax::ptr::P;
 use syntax::{codemap, ast, abi, owned_slice};
-use syntax::parse::{parser, token, classify};
+use syntax::parse::{self, parser, token, classify};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use regex_dfa::{Regex, Dfa};
@@ -202,6 +202,14 @@ impl<T> Iterator for SingleItem<T> {
     }
 }
 
+fn parse_str_interior(parser: &mut parser::Parser) -> String {
+    let (re_str, style) = parser.parse_str();
+    match style {
+        ast::CookedStr => parse::str_lit(re_str.as_slice()),
+        ast::RawStr(_) => parse::raw_str_lit(re_str.as_slice()),
+    }
+}
+
 pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree]) -> Box<base::MacResult+'static> {
     let mut parser = cx.new_parser_from_tts(args);
 
@@ -223,7 +231,7 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     let mut arms = Vec::new();
     while parser.token != token::Eof {
         // parse '"regex" =>'
-        let (re_str, _) = parser.parse_str(); // don't care what style of string literal
+        let re_str = parse_str_interior(&mut parser);
         let sp = parser.last_span;
         let re = match Regex::new(re_str.as_slice()) {
             Ok(r) => r,

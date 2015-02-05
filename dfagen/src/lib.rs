@@ -13,7 +13,8 @@ use syntax::{codemap, ast, abi, owned_slice};
 use syntax::parse::{self, parser, token, classify};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
-use regex_dfa::{Regex, Dfa};
+use regex_dfa::Dfa;
+use regex_dfa::regex::Regex;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 
@@ -40,7 +41,7 @@ fn spanned<T>(node: T) -> codemap::Spanned<T> {
     }
 }
 
-pub fn dfagen(dfa: &Dfa, ident: ast::Ident, vis: ast::Visibility, span: codemap::Span) -> ast::Item {
+pub fn dfagen(dfa: &Dfa, ident: ast::Ident, vis: ast::Visibility, span: codemap::Span) -> P<ast::Item> {
     let u32_ty = ast::Ty {
         id: ast::DUMMY_NODE_ID,
         node: ast::TyPath(ast::Path {
@@ -178,14 +179,14 @@ pub fn dfagen(dfa: &Dfa, ident: ast::Ident, vis: ast::Visibility, span: codemap:
         },
         P(block)
     );
-    ast::Item {
+    P(ast::Item {
         ident: ident,
         attrs: Vec::new(),
         id: ast::DUMMY_NODE_ID,
         node: node,
         vis: vis,
         span: span,
-    }
+    })
 }
 
 struct SingleItem<T> {
@@ -211,6 +212,10 @@ fn parse_str_interior(parser: &mut parser::Parser) -> String {
     }
 }
 
+fn first_nullable(vec: &[Regex]) -> Option<usize> {
+    vec.iter().position(Regex::nullable)
+}
+
 pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree]) -> Box<base::MacResult+'static> {
     let mut parser = cx.new_parser_from_tts(args);
 
@@ -229,7 +234,8 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     parser.expect(&token::Semi);
 
     // now parse the token arms
-    let mut arms = Vec::new();
+    let mut re_vec = Vec::new();
+    let mut actions = Vec::new();
     while parser.token != token::Eof {
         // parse '"regex" =>'
         let re_str = parse_str_interior(&mut parser);
@@ -264,79 +270,56 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
             parser.commit_expr(&*expr, &[token::Comma], &[token::Eof]);
         }
 
-        let (dfa, map) = Dfa::from_derivatives(vec![re, Regex::Null]);
-        let mut accepting: Vec<_> = iter::repeat(false).take(dfa.transitions.len()).collect();
-        for (re, ix) in map.into_iter() {
-            if re.nullable() {
-                accepting[ix as usize] = true;
-            }
+        re_vec.push(re);
+        actions.push(expr);
+    }
+
+    let (dfa, map) = Dfa::from_derivatives(vec![re_vec]);
+    let fail_ix = match map.get(&iter::repeat(Regex::Null).take(actions.len()).collect::<Vec<_>>()) {
+        Some(&ix) => ix,
+        None => {
+            // XXX
+            cx.span_warn(sp, "some rule (?) has .* as a prefix");
+            dfa.transitions.len() as u32
         }
-
-        arms.push(((dfa, accepting), expr));
+    };
+    let mut action_by_state: Vec<_> = iter::repeat(None).take(dfa.transitions.len()).collect();
+    for (res, ix) in map.into_iter() {
+        action_by_state[ix as usize] = first_nullable(&*res);
     }
 
-    let dfa_transition_fns: Vec<_> = (0..arms.len())
-        .map(|i| token::str_to_ident(&format!("transition_{}", i)[]))
-        .collect();
-    let dfa_acceptance_fns: Vec<_> = (0..arms.len())
-        .map(|i| token::str_to_ident(&format!("accepting_{}", i)[]))
-        .collect();
+    let dfa_transition_fn = token::str_to_ident(&*format!("transition"));
+    let dfa_acceptance_fn = token::str_to_ident(&*format!("accepting"));
 
-    let mut helpers = Vec::new();
-    for (i, &((ref dfa, ref accepting), _)) in arms.iter().enumerate() {
-        helpers.push(P(dfagen(dfa, dfa_transition_fns[i], ast::Visibility::Inherited, sp)));
-        helpers.push(cx.item_fn(
-            DUMMY_SP,
-            dfa_acceptance_fns[i],
-            vec![cx.arg(DUMMY_SP,
-                        token::str_to_ident("state"),
-                        cx.ty_path(cx.path_global(DUMMY_SP, vec![token::str_to_ident("u32")])))],
-            cx.ty_path(cx.path_global(DUMMY_SP, vec![token::str_to_ident("bool")])),
-            cx.block(DUMMY_SP, Vec::new(), Some(
-                cx.expr_match(DUMMY_SP,
-                              cx.expr_ident(DUMMY_SP, token::str_to_ident("state")),
-                              vec![
-                                cx.arm(DUMMY_SP,
-                                       accepting.iter().enumerate()
-                                        .filter(|&(_, &a)| a)
-                                        .map(|(i, _)|
-                                                cx.pat_lit(DUMMY_SP,
-                                                           cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64,
-                                                                                             ast::UnsignedIntLit(ast::TyU32)))))
-                                        .collect(),
-                                       cx.expr_bool(DUMMY_SP, true)),
-                                cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], cx.expr_bool(DUMMY_SP, false))
-                              ])))
-        ));
-    }
-
-    let vec_size = cx.expr_lit(DUMMY_SP, ast::LitInt(arms.len() as u64, ast::UnsuffixedIntLit(ast::Plus)));
     let input = token::gensym_ident("input");
     let remaining = token::gensym_ident("remaining");
-    let states = token::gensym_ident("states");
+    let state = token::gensym_ident("state");
     let last_match = token::gensym_ident("last_match");
-    let fail = token::gensym_ident("fail");
     let which = token::gensym_ident("which");
-    let st = token::gensym_ident("st");
     let ch = token::gensym_ident("ch");
     let rest = token::gensym_ident("rest");
-    let check_matches = (0..arms.len()).rev().fold(
-        cx.expr_block(cx.block(DUMMY_SP, Vec::new(), None)),
-        |acc, i| {
-            let accepting = dfa_acceptance_fns[i];
-            let ix = cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus)));
-            cx.expr_if(DUMMY_SP, quote_expr!(cx, $accepting($states[$ix])),
-                       quote_expr!(cx, $last_match = Some(($ix, $remaining))),
-                       Some(acc))
-        });
-    let advance_dfas = cx.expr_block(cx.block(DUMMY_SP, (0..arms.len()).map(
-        |i| {
-            let transition = dfa_transition_fns[i];
-            let ix = cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus)));
-            quote_stmt!(cx, $states[$ix] = $transition($states[$ix], $ch);)
-        }).collect(), None));
+    let fail_ix_lit = cx.expr_lit(DUMMY_SP, ast::LitInt(fail_ix as u64, ast::UnsignedIntLit(ast::TyU32)));
+
+    let mut helpers = Vec::new();
+    helpers.push(dfagen(&dfa, dfa_transition_fn, ast::Visibility::Inherited, sp));
+    helpers.push(cx.item_fn(
+        DUMMY_SP,
+        dfa_acceptance_fn,
+        vec![cx.arg(DUMMY_SP, state, quote_ty!(cx, u32))],
+        quote_ty!(cx, Option<u32>),
+        {
+            let mut arms: Vec<_> = action_by_state.into_iter().enumerate().filter_map(|(ix, maybe_act)| maybe_act.map(|act| {
+                cx.arm(DUMMY_SP,
+                       vec![cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(ix as u64, ast::UnsignedIntLit(ast::TyU32))))],
+                       cx.expr_some(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(act as u64, ast::UnsignedIntLit(ast::TyU32)))))
+            })).collect();
+            arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], cx.expr_none(DUMMY_SP)));
+            cx.block(DUMMY_SP, vec![], Some(cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state), arms)))
+        }
+    ));
+
     let compute_result = cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, which),
-        arms.into_iter().enumerate().map(|(i, (_, expr))|
+        actions.into_iter().enumerate().map(|(i, expr)|
             cx.arm(DUMMY_SP,
                    vec![cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus))))],
                    expr)).collect::<Vec<_>>() + &[cx.arm_unreachable(DUMMY_SP)]);
@@ -365,24 +348,19 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
         },
         cx.block(DUMMY_SP,
             helpers.map_in_place(|x| cx.stmt_item(DUMMY_SP, x)) + &[
-                quote_stmt!(cx, let mut $states = [0; $vec_size];),
+                quote_stmt!(cx, let mut $state = 0;),
                 quote_stmt!(cx, let mut $remaining = *$input;),
                 quote_stmt!(cx, let mut $last_match = None;),
                 quote_stmt!(cx, loop {
-                    $check_matches
-                    let mut $fail = true;
-                    for &$st in $states.iter() {
-                        if $st != 1 {
-                            $fail = false;
-                            break;
-                        }
+                    if let Some($which) = $dfa_acceptance_fn($state) {
+                        $last_match = Some(($which, $remaining));
                     }
-                    if $fail {
+                    if $state == $fail_ix_lit {
                         break;
                     }
                     if let Some(($ch, $rest)) = $remaining.slice_shift_char() {
                         $remaining = $rest;
-                        $advance_dfas
+                        $state = $dfa_transition_fn($state, $ch);
                     } else {
                         break;
                     }

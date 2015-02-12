@@ -177,7 +177,7 @@ where T: Ord + fmt::Show + fmt::String,
             None
         }
     }));
-    let stack_ty = quote_ty!(cx, ::std::vec::Vec<Box<()> >);
+    let stack_ty = quote_ty!(cx, ::std::vec::Vec<Box<::std::any::Any> >);
     let span_stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
         cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
     ], vec![], vec![cx.ty_option(span_ty.clone())], vec![]));
@@ -230,7 +230,7 @@ where T: Ord + fmt::Show + fmt::String,
                     let local = P(ast::Local {
                         pat: pat,
                         ty: Some(ty.clone()),
-                        init: Some(quote_expr!(cx, unsafe { *::std::mem::transmute::<Box<()>, Box<$ty>>($stack_id.pop().unwrap()) })),
+                        init: Some(quote_expr!(cx, *::std::boxed::BoxAny::downcast::<$ty>($stack_id.pop().unwrap()).unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
                         source: ast::LocalLet,
@@ -262,7 +262,7 @@ where T: Ord + fmt::Show + fmt::String,
             let tmp = token::gensym_ident("result");
             reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
             reduce_stmts.push(quote_stmt!(cx,
-                $stack_id.push(unsafe { ::std::mem::transmute(Box::new($tmp)) });
+                $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
             ));
             reduce_stmts.push(quote_stmt!(cx, $span_stack_id.push($span_id);));
 
@@ -337,9 +337,7 @@ where T: Ord + fmt::Show + fmt::String,
                         LRAction::Accept => {
                             let ty = types.get(actual_start).unwrap();
                             let arm_expr = quote_expr!(cx,
-                                return Ok(*unsafe {
-                                    ::std::mem::transmute::<Box<()>, Box<$ty>>($stack_id.pop().unwrap())
-                                }));
+                                return Ok(*::std::boxed::BoxAny::downcast::<$ty>($stack_id.pop().unwrap()).unwrap()));
                             arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
                         }
                     };
@@ -360,7 +358,7 @@ where T: Ord + fmt::Show + fmt::String,
             }).chain(Some(quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },)).into_iter()).collect())),
         quote_stmt!(cx, match $token_span_id {
             Some(($token_id, $span_id)) => {
-                $stack_id.push(unsafe { ::std::mem::transmute(Box::new($token_id)) });
+                $stack_id.push(Box::new($token_id) as Box<::std::any::Any>);
                 $span_stack_id.push(Some($span_id));
             }
             None => unsafe { ::std::intrinsics::unreachable() },

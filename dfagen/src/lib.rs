@@ -9,7 +9,7 @@ extern crate rustc;
 
 use std::iter;
 use syntax::ptr::P;
-use syntax::{codemap, ast, abi, owned_slice};
+use syntax::{codemap, ast, owned_slice};
 use syntax::parse::{self, parser, token, classify};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
@@ -18,78 +18,18 @@ use regex_dfa::regex::Regex;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 
-fn expr(node: ast::Expr_) -> ast::Expr {
-    ast::Expr {
-        id: ast::DUMMY_NODE_ID,
-        node: node,
-        span: codemap::DUMMY_SP,
-    }
+fn expr_u32(cx: &base::ExtCtxt, u: u32) -> P<ast::Expr> {
+    cx.expr_lit(DUMMY_SP, ast::LitInt(u as u64, ast::UnsignedIntLit(ast::TyU32)))
 }
 
-fn pat(node: ast::Pat_) -> ast::Pat {
-    ast::Pat {
-        id: ast::DUMMY_NODE_ID,
-        node: node,
-        span: codemap::DUMMY_SP,
-    }
-}
-
-fn spanned<T>(node: T) -> codemap::Spanned<T> {
-    codemap::Spanned {
-        node: node,
-        span: codemap::DUMMY_SP,
-    }
-}
-
-pub fn dfagen(dfa: &Dfa, ident: ast::Ident, vis: ast::Visibility, span: codemap::Span) -> P<ast::Item> {
-    let u32_ty = ast::Ty {
-        id: ast::DUMMY_NODE_ID,
-        node: ast::TyPath(ast::Path {
-            span: codemap::DUMMY_SP,
-            global: true,
-            segments: vec![ast::PathSegment {
-                identifier: token::str_to_ident("u32"),
-                parameters: ast::PathParameters::none(),
-            }],
-        }, ast::DUMMY_NODE_ID),
-        span: codemap::DUMMY_SP,
-    };
-    let char_ty = ast::Ty {
-        id: ast::DUMMY_NODE_ID,
-        node: ast::TyPath(ast::Path {
-            span: codemap::DUMMY_SP,
-            global: true,
-            segments: vec![ast::PathSegment {
-                identifier: token::str_to_ident("char"),
-                parameters: ast::PathParameters::none(),
-            }],
-        }, ast::DUMMY_NODE_ID),
-        span: codemap::DUMMY_SP,
-    };
-    let state_arg = ast::Arg {
-        ty: P(u32_ty.clone()),
-        pat: P(pat(ast::PatIdent(ast::BindByValue(ast::MutImmutable), codemap::Spanned {
-            node: token::str_to_ident("state"),
-            span: codemap::DUMMY_SP,
-        }, None))),
-        id: ast::DUMMY_NODE_ID,
-    };
-    let char_arg = ast::Arg {
-        ty: P(char_ty.clone()),
-        pat: P(pat(ast::PatIdent(ast::BindByValue(ast::MutImmutable), codemap::Spanned {
-            node: token::str_to_ident("ch"),
-            span: codemap::DUMMY_SP,
-        }, None))),
-        id: ast::DUMMY_NODE_ID,
-    };
-    let decl = ast::FnDecl {
-        inputs: vec![state_arg, char_arg],
-        output: ast::Return(P(u32_ty.clone())),
-        variadic: false,
-    };
+pub fn dfa_fn(cx: &base::ExtCtxt, dfa: &Dfa, ident: ast::Ident) -> P<ast::Item> {
+    let u32_ty = quote_ty!(cx, u32);
+    let char_ty = quote_ty!(cx, char);
+    let state_arg = cx.arg(DUMMY_SP, token::str_to_ident("state"), u32_ty.clone());
+    let char_arg = cx.arg(DUMMY_SP, token::str_to_ident("ch"), char_ty.clone());
     let mut arms = Vec::with_capacity(dfa.transitions.len());
     for (i, tr) in dfa.transitions.iter().enumerate() {
-        let arm_pat = pat(ast::PatLit(P(expr(ast::ExprLit(P(spanned(ast::LitInt(i as u64, ast::UnsignedIntLit(ast::TyU32)))))))));
+        let arm_pat = cx.pat_lit(DUMMY_SP, expr_u32(cx, i as u32));
         let mut subarms = Vec::new();
         let mut iter = tr.by_char.iter().peekable();
         while let Some((&ch, &target)) = iter.next() {
@@ -102,106 +42,27 @@ pub fn dfagen(dfa: &Dfa, ident: ast::Ident, vis: ast::Visibility, span: codemap:
                 iter.next();
             }
             let pat = if ch == end {
-                pat(ast::PatLit(P(expr(ast::ExprLit(P(spanned(ast::LitChar(ch))))))))
+                cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitChar(ch)))
             } else {
-                pat(ast::PatRange(
-                        P(expr(ast::ExprLit(P(spanned(ast::LitChar(ch)))))),
-                        P(expr(ast::ExprLit(P(spanned(ast::LitChar(end))))))
+                cx.pat(DUMMY_SP, ast::PatRange(
+                        cx.expr_lit(DUMMY_SP, ast::LitChar(ch)),
+                        cx.expr_lit(DUMMY_SP, ast::LitChar(end))
                         ))
             };
             subarms.push(ast::Arm {
                 attrs: Vec::new(),
-                pats: vec![P(pat)],
+                pats: vec![pat],
                 guard: None,
-                body: P(expr(ast::ExprLit(P(spanned(ast::LitInt(target as u64, ast::UnsignedIntLit(ast::TyU32))))))),
+                body: expr_u32(cx, target as u32),
             });
         }
-        subarms.push(ast::Arm {
-            attrs: Vec::new(),
-            pats: vec![P(pat(ast::PatWild(ast::PatWildSingle)))],
-            guard: None,
-            body: P(expr(ast::ExprLit(P(spanned(ast::LitInt(tr.default as u64, ast::UnsignedIntLit(ast::TyU32))))))),
-        });
-        let body = expr(ast::ExprMatch(P(expr(ast::ExprPath(ast::Path {
-            span: codemap::DUMMY_SP,
-            global: false,
-            segments: vec![ast::PathSegment {
-                identifier: token::str_to_ident("ch"),
-                parameters: ast::PathParameters::none(),
-            }],
-        }))), subarms, ast::MatchSource::Normal));
-        arms.push(ast::Arm {
-            attrs: Vec::new(),
-            pats: vec![P(arm_pat)],
-            guard: None,
-            body: P(body),
-        });
+        subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], expr_u32(cx, tr.default as u32)));
+        let body = cx.expr_match(DUMMY_SP, quote_expr!(cx, ch), subarms);
+        arms.push(cx.arm(DUMMY_SP, vec![arm_pat], body));
     }
-    arms.push(ast::Arm {
-        attrs: Vec::new(),
-        pats: vec![P(pat(ast::PatWild(ast::PatWildSingle)))],
-        guard: None,
-        body: P(expr(ast::ExprPath(ast::Path {
-            span: codemap::DUMMY_SP,
-            global: false,
-            segments: vec![ast::PathSegment {
-                identifier: token::str_to_ident("state"),
-                parameters: ast::PathParameters::none(),
-            }],
-        }))),
-    });
-    let block = ast::Block {
-        view_items: Vec::new(),
-        stmts: Vec::new(),
-        expr: Some(P(expr(ast::ExprMatch(P(expr(ast::ExprPath(ast::Path {
-            span: codemap::DUMMY_SP,
-            global: false,
-            segments: vec![ast::PathSegment {
-                identifier: token::str_to_ident("state"),
-                parameters: ast::PathParameters::none(),
-            }],
-        }))), arms, ast::MatchSource::Normal)))),
-        id: ast::DUMMY_NODE_ID,
-        rules: ast::BlockCheckMode::DefaultBlock,
-        span: codemap::DUMMY_SP,
-    };
-    let node = ast::ItemFn(
-        P(decl),
-        ast::Unsafety::Normal,
-        abi::Abi::Rust,
-        ast::Generics {
-            lifetimes: Vec::new(),
-            ty_params: owned_slice::OwnedSlice::empty(),
-            where_clause: ast::WhereClause {
-                id: ast::DUMMY_NODE_ID,
-                predicates: Vec::new(),
-            },
-        },
-        P(block)
-    );
-    P(ast::Item {
-        ident: ident,
-        attrs: Vec::new(),
-        id: ast::DUMMY_NODE_ID,
-        node: node,
-        vis: vis,
-        span: span,
-    })
-}
-
-struct SingleItem<T> {
-    item: Option<T>
-}
-fn single_item<T>(item: T) -> SingleItem<T> {
-    SingleItem {
-        item: Some(item)
-    }
-}
-impl<T> Iterator for SingleItem<T> {
-    type Item = T;
-    fn next(&mut self) -> Option<T> {
-        std::mem::replace(&mut self.item, None)
-    }
+    arms.push(quote_arm!(cx, _ => state,));
+    let block = cx.block(DUMMY_SP, vec![], Some(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms)));
+    cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], u32_ty.clone(), block)
 }
 
 fn parse_str_interior(parser: &mut parser::Parser) -> String {
@@ -291,17 +152,12 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
     let dfa_transition_fn = token::str_to_ident(&*format!("transition"));
     let dfa_acceptance_fn = token::str_to_ident(&*format!("accepting"));
 
-    let input = token::gensym_ident("input");
-    let remaining = token::gensym_ident("remaining");
-    let state = token::gensym_ident("state");
-    let last_match = token::gensym_ident("last_match");
-    let which = token::gensym_ident("which");
-    let ch = token::gensym_ident("ch");
-    let rest = token::gensym_ident("rest");
+    let input = token::str_to_ident("input");
+    let state = token::str_to_ident("state");
     let fail_ix_lit = cx.expr_lit(DUMMY_SP, ast::LitInt(fail_ix as u64, ast::UnsignedIntLit(ast::TyU32)));
 
     let mut helpers = Vec::new();
-    helpers.push(dfagen(&dfa, dfa_transition_fn, ast::Visibility::Inherited, sp));
+    helpers.push(dfa_fn(cx, &dfa, dfa_transition_fn));
     helpers.push(cx.item_fn(
         DUMMY_SP,
         dfa_acceptance_fn,
@@ -314,11 +170,11 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
                        cx.expr_some(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(act as u64, ast::UnsignedIntLit(ast::TyU32)))))
             })).collect();
             arms.push(cx.arm(DUMMY_SP, vec![cx.pat_wild(DUMMY_SP)], cx.expr_none(DUMMY_SP)));
-            cx.block(DUMMY_SP, vec![], Some(cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state), arms)))
+            cx.block(DUMMY_SP, vec![], Some(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms)))
         }
     ));
 
-    let compute_result = cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, which),
+    let compute_result = cx.expr_match(DUMMY_SP, quote_expr!(cx, which),
         actions.into_iter().enumerate().map(|(i, expr)|
             cx.arm(DUMMY_SP,
                    vec![cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitInt(i as u64, ast::UnsuffixedIntLit(ast::Plus))))],
@@ -348,33 +204,33 @@ pub fn expand_scanner(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::To
         },
         cx.block(DUMMY_SP,
             helpers.map_in_place(|x| cx.stmt_item(DUMMY_SP, x)) + &[
-                quote_stmt!(cx, let mut $state = 0;),
-                quote_stmt!(cx, let mut $remaining = *$input;),
-                quote_stmt!(cx, let mut $last_match = None;),
+                quote_stmt!(cx, let mut state = 0;),
+                quote_stmt!(cx, let mut remaining = *input;),
+                quote_stmt!(cx, let mut last_match = None;),
                 quote_stmt!(cx, loop {
-                    if let Some($which) = $dfa_acceptance_fn($state) {
-                        $last_match = Some(($which, $remaining));
+                    if let Some(which) = $dfa_acceptance_fn(state) {
+                        last_match = Some((which, remaining));
                     }
-                    if $state == $fail_ix_lit {
+                    if state == $fail_ix_lit {
                         break;
                     }
-                    if let Some(($ch, $rest)) = $remaining.slice_shift_char() {
-                        $remaining = $rest;
-                        $state = $dfa_transition_fn($state, $ch);
+                    if let Some((ch, rest)) = remaining.slice_shift_char() {
+                        remaining = rest;
+                        state = $dfa_transition_fn(state, ch);
                     } else {
                         break;
                     }
                 }),
             ],
-            Some(cx.expr(DUMMY_SP, ast::ExprIfLet(quote_pat!(cx, Some(($which, $remaining))), cx.expr_ident(DUMMY_SP, last_match),
+            Some(cx.expr(DUMMY_SP, ast::ExprIfLet(quote_pat!(cx, Some((which, remaining))), quote_expr!(cx, last_match),
                 cx.block(DUMMY_SP, vec![
-                    quote_stmt!(cx, let $text_pat = $input.slice_to($input.subslice_offset($remaining));),
-                    quote_stmt!(cx, *$input = $remaining;),
+                    quote_stmt!(cx, let $text_pat = input.slice_to(input.subslice_offset(remaining));),
+                    quote_stmt!(cx, *input = remaining;),
                 ], Some(cx.expr_some(DUMMY_SP, compute_result))),
                 Some(cx.expr_none(DUMMY_SP)))))
         )
     );
-    base::MacItems::new(single_item(final_fn))
+    base::MacItems::new(Some(final_fn).into_iter())
 }
 
 #[plugin_registrar]

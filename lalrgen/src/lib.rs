@@ -1,18 +1,17 @@
 #![crate_type="dylib"]
-#![feature(plugin_registrar)]
-#![feature(quote)]
-#![allow(unstable)]
+#![feature(plugin_registrar, quote, rustc_private, scoped_tls)]
 
 extern crate lalr;
 extern crate syntax;
 extern crate rustc;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::{iter, fmt, cmp};
-use std::fmt::Writer;
+use std::fmt;
+use std::fmt::Write;
 use syntax::ptr::P;
+use syntax::util::small_vector::SmallVector;
 use syntax::{ast, owned_slice, codemap};
-use syntax::parse::{parser, token, classify};
+use syntax::parse::{parser, token, classify, PResult};
 use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
@@ -28,17 +27,17 @@ fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyU32)))
 }
 fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyUs(false))))
+    cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyUs)))
 }
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
 
-fn most_frequent<T: Ord, I: Iterator<Item=T>>(mut it: I) -> Option<T> {
+fn most_frequent<T: Ord, I: Iterator<Item=T>>(it: I) -> Option<T> {
     let mut freq = BTreeMap::new();
     for x in it {
-        *freq.entry(x).get().unwrap_or_else(|v| v.insert(0)) += 1;
+        *freq.entry(x).or_insert(0) += 1;
     }
     freq.into_iter().fold(None, |best, (x, f)| match best {
         None => Some((x, f)),
@@ -46,7 +45,7 @@ fn most_frequent<T: Ord, I: Iterator<Item=T>>(mut it: I) -> Option<T> {
     }).map(|(x, _)| x)
 }
 
-fn expected_one_of<S: fmt::String>(xs: &[S]) -> String {
+fn expected_one_of<S: fmt::Display>(xs: &[S]) -> String {
     let mut err_msg: String = "expected".to_string();
     for (i, x) in xs.iter().enumerate() {
         if i == 0 {
@@ -92,9 +91,9 @@ pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     reduce_on: FR,
     priority_of: FO,
 ) -> Result<P<ast::Item>, LR1Conflict<'a, T, N, A>>
-where T: Ord + fmt::Show + fmt::String,
-      N: Ord + fmt::Show,
-      A: Ord + fmt::Show,
+where T: Ord + fmt::Debug + fmt::Display,
+      N: Ord + fmt::Debug,
+      A: fmt::Debug,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
       FA: FnMut(&N, &A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
       FR: FnMut(&A, Option<&T>) -> bool,
@@ -150,12 +149,12 @@ where T: Ord + fmt::Show + fmt::String,
             rhss.iter().map(|rhs| rhs as *const _)
         })
         .enumerate()
-        .map(|(i, k)| (k, token::gensym_ident(&format!("reduce_{}", i)[])))
+        .map(|(i, k)| (k, token::gensym_ident(&format!("reduce_{}", i))))
         .collect();
     let goto_fn_ids: BTreeMap<_, _> = grammar.rules.keys()
         .filter(|&lhs| *lhs != grammar.start)
         .enumerate()
-        .map(|(i, lhs)| (lhs, token::gensym_ident(&format!("goto_{}", i)[])))
+        .map(|(i, lhs)| (lhs, token::gensym_ident(&format!("goto_{}", i))))
         .collect();
     let stack_id = token::gensym_ident("stack");
     let span_stack_id = token::gensym_ident("span_stack");
@@ -165,6 +164,7 @@ where T: Ord + fmt::Show + fmt::String,
     let span_id = token::gensym_ident("span");
     let token_span_id = token::gensym_ident("token_span");
     let next_state_id = token::gensym_ident("next_state");
+    let unreachable = cx.expr_unreachable(DUMMY_SP);
 
     let mut stmts = Vec::new();
     stmts.push(cx.stmt_item(DUMMY_SP, range_fn));
@@ -176,7 +176,7 @@ where T: Ord + fmt::Show + fmt::String,
         } else {
             None
         }
-    }));
+    }).unwrap());
     let stack_ty = quote_ty!(cx, ::std::vec::Vec<Box<::std::any::Any> >);
     let span_stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
         cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
@@ -191,7 +191,7 @@ where T: Ord + fmt::Show + fmt::String,
         let goto_fn = *goto_fn_ids.get(lhs).unwrap();
         let lhs_ty = types.get(lhs).unwrap();
         for rhs in rhss.iter() {
-            let (result, arg_pats, span) = to_expr(lhs, &rhs.act, cx, &rhs.syms[]);
+            let (result, arg_pats, span) = to_expr(lhs, &rhs.act, cx, &rhs.syms);
             let args = vec![ast::Arg {
                 ty: cx.ty_rptr(DUMMY_SP, stack_ty.clone(), None, ast::MutMutable),
                 pat: cx.pat_ident(DUMMY_SP, stack_id),
@@ -212,11 +212,11 @@ where T: Ord + fmt::Show + fmt::String,
             let len = lit_usize(cx, rhs.syms.len());
             let mut reduce_stmts: Vec<_> = vec![ ];
             if rhs.syms.len() > 0 {
-                reduce_stmts.push(quote_stmt!(cx, let $span_id = $range_array_fn_id(&$span_stack_id[($span_stack_id.len() - $len)..]);));
+                reduce_stmts.push(quote_stmt!(cx, let $span_id = $range_array_fn_id(&$span_stack_id[($span_stack_id.len() - $len)..]);).unwrap());
                 // XXX: Annoying syntax :(
-                reduce_stmts.push(quote_stmt!(cx, match $span_stack_id.len() - $len { x => $span_stack_id.truncate(x) };));
+                reduce_stmts.push(quote_stmt!(cx, match $span_stack_id.len() - $len { x => $span_stack_id.truncate(x) };).unwrap());
             } else {
-                reduce_stmts.push(quote_stmt!(cx, let $span_id = None;));
+                reduce_stmts.push(quote_stmt!(cx, let $span_id = None;).unwrap());
             }
             reduce_stmts.extend(rhs.syms.iter()
             .zip(arg_pats.into_iter())
@@ -230,7 +230,7 @@ where T: Ord + fmt::Show + fmt::String,
                     let local = P(ast::Local {
                         pat: pat,
                         ty: Some(ty.clone()),
-                        init: Some(quote_expr!(cx, *::std::boxed::BoxAny::downcast::<$ty>($stack_id.pop().unwrap()).unwrap())),
+                        init: Some(quote_expr!(cx, *$stack_id.pop().unwrap().downcast::<$ty>().unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
                         source: ast::LocalLet,
@@ -245,11 +245,11 @@ where T: Ord + fmt::Show + fmt::String,
             if rhs.syms.len() > 1 {
                 let len_minus_one = lit_usize(cx, rhs.syms.len() - 1);
                 // XXX: Annoying syntax :(
-                reduce_stmts.push(quote_stmt!(cx, match $state_stack_id.len() - $len_minus_one { x => unsafe { $state_stack_id.set_len(x) } };));
+                reduce_stmts.push(quote_stmt!(cx, match $state_stack_id.len() - $len_minus_one { x => unsafe { $state_stack_id.set_len(x) } };).unwrap());
             } else if rhs.syms.len() == 0 {
-                reduce_stmts.push(quote_stmt!(cx, $state_stack_id.push(*$state_id);));
+                reduce_stmts.push(quote_stmt!(cx, $state_stack_id.push(*$state_id);).unwrap());
             }
-            reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_stack_id.last().unwrap());));
+            reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_stack_id.last().unwrap());).unwrap());
             let rspan = result.span;
 
             // Expand the result of the RHS right now, with SPAN_ID set appropriately.
@@ -263,8 +263,8 @@ where T: Ord + fmt::Show + fmt::String,
             reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
-            ));
-            reduce_stmts.push(quote_stmt!(cx, $span_stack_id.push($span_id);));
+            ).unwrap());
+            reduce_stmts.push(quote_stmt!(cx, $span_stack_id.push($span_id);).unwrap());
 
             let block = cx.block(rspan, reduce_stmts, None);
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
@@ -281,8 +281,8 @@ where T: Ord + fmt::Show + fmt::String,
                 if let Some(&dest) = state.goto.get(lhs) {
                     let dest = dest as u32;
                     if dest != most_freq {
-                        pats_by_dest.entry(dest).get()
-                            .unwrap_or_else(|v| v.insert(vec![]))
+                        pats_by_dest.entry(dest)
+                            .or_insert(vec![])
                             .push(pat_u32(cx, ix as u32));
                     }
                 }
@@ -295,7 +295,7 @@ where T: Ord + fmt::Show + fmt::String,
         } else {
             // This shouldn't normally happen, but it can when `lhs` is unused in the
             // grammar.
-            quote_expr!(cx, unreachable!())
+            unreachable.clone()
         };
         let f = cx.item_fn(DUMMY_SP, *id, vec![
             cx.arg(DUMMY_SP, state_id, u32_ty.clone())
@@ -319,7 +319,7 @@ where T: Ord + fmt::Show + fmt::String,
                     let arm_expr = match *action {
                         LRAction::Shift(dest) => lit_u32(cx, dest as u32),
                         LRAction::Reduce(_, rhs) => {
-                            reduce_arms.entry(rhs as *const _).get().unwrap_or_else(|v| v.insert(vec![])).push(pat);
+                            reduce_arms.entry(rhs as *const _).or_insert(vec![]).push(pat);
                             continue;
                         }
                         LRAction::Accept => unreachable!(),
@@ -332,12 +332,12 @@ where T: Ord + fmt::Show + fmt::String,
                     match *action {
                         LRAction::Shift(_) => unreachable!(),
                         LRAction::Reduce(_, rhs) => {
-                            reduce_arms.entry(rhs as *const _).get().unwrap_or_else(|v| v.insert(vec![])).push(pat);
+                            reduce_arms.entry(rhs as *const _).or_insert(vec![]).push(pat);
                         }
                         LRAction::Accept => {
                             let ty = types.get(actual_start).unwrap();
                             let arm_expr = quote_expr!(cx,
-                                return Ok(*::std::boxed::BoxAny::downcast::<$ty>($stack_id.pop().unwrap()).unwrap()));
+                                return Ok(*$stack_id.pop().unwrap().downcast::<$ty>().unwrap()));
                             arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
                         }
                     };
@@ -355,17 +355,17 @@ where T: Ord + fmt::Show + fmt::String,
                     vec![pat_u32(cx, ix as u32)],
                     cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, token_span_id),
                     arms))
-            }).chain(Some(quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },)).into_iter()).collect())),
+            }).chain(Some(quote_arm!(cx, _ => $unreachable,)).into_iter()).collect())),
         quote_stmt!(cx, match $token_span_id {
             Some(($token_id, $span_id)) => {
                 $stack_id.push(Box::new($token_id) as Box<::std::any::Any>);
                 $span_stack_id.push(Some($span_id));
             }
-            None => unsafe { ::std::intrinsics::unreachable() },
-        };),
-        quote_stmt!(cx, $state_stack_id.push($state_id);),
-        quote_stmt!(cx, $token_span_id = $it_arg_id.next();),
-        quote_stmt!(cx, $state_id = $next_state_id;),
+            None => $unreachable,
+        };).unwrap(),
+        quote_stmt!(cx, $state_stack_id.push($state_id);).unwrap(),
+        quote_stmt!(cx, $token_span_id = $it_arg_id.next();).unwrap(),
+        quote_stmt!(cx, $state_id = $next_state_id;).unwrap(),
     ], None))));
     let body = cx.block(DUMMY_SP, stmts, None);
     let out_ty = cx.ty_path(cx.path_all(DUMMY_SP,
@@ -384,14 +384,23 @@ fn expand_parser<'a>(
     name: ast::Ident,
     tts: Vec<ast::TokenTree>
 ) -> Box<base::MacResult + 'a> {
-    #[derive(Show)]
+    parse_parser(cx, sp, name, tts).unwrap_or_else(|_| base::DummyResult::any(sp))
+}
+
+fn parse_parser<'a>(
+    cx: &'a mut base::ExtCtxt,
+    sp: codemap::Span,
+    name: ast::Ident,
+    tts: Vec<ast::TokenTree>
+) -> PResult<Box<base::MacResult + 'a>> {
+    #[derive(Debug)]
     enum Binding {
         Pat(P<ast::Pat>),
         Enum(codemap::Span, Vec<P<ast::Pat>>),
         None,
     }
 
-    #[derive(Show)]
+    #[derive(Debug)]
     struct Action {
         binds: Vec<Binding>,
         expr: P<ast::Expr>,
@@ -399,18 +408,6 @@ fn expand_parser<'a>(
         exclusions: BTreeSet<String>,
         exclude_eof: bool,
         priority: i32,
-    }
-
-    // These are hacks, necessary because of a bug in Rust deriving
-    impl PartialEq for Action {
-        fn eq(&self, _: &Action) -> bool { unreachable!() }
-    }
-    impl Eq for Action { }
-    impl PartialOrd for Action {
-        fn partial_cmp(&self, _: &Action) -> Option<cmp::Ordering> { unreachable!() }
-    }
-    impl Ord for Action {
-        fn cmp(&self, _: &Action) -> cmp::Ordering { unreachable!() }
     }
 
     fn pretty_rule(lhs: ast::Name, syms: &[Symbol<ast::Ident, ast::Name>]) -> String {
@@ -444,23 +441,23 @@ fn expand_parser<'a>(
     }
 
     let mut parser = cx.new_parser_from_tts(&*tts);
-    let token_ty = parser.parse_ty();
-    parser.expect(&token::Semi);
+    let token_ty = try!(parser.parse_ty_nopanic());
+    try!(parser.expect(&token::Semi));
 
-    let span_ty = parser.parse_ty();
-    parser.expect(&token::Semi);
+    let span_ty = try!(parser.parse_ty_nopanic());
+    try!(parser.expect(&token::Semi));
 
     let range_fn_id = token::gensym_ident("range");
     let range_fn = {
         let lo = parser.span.lo;
-        parser.expect(&token::OpenDelim(token::Paren));
+        try!(parser.expect(&token::OpenDelim(token::Paren)));
         let p1_sp = parser.span;
-        let p1 = parser.parse_ident();
-        parser.expect(&token::Comma);
+        let p1 = try!(parser.parse_ident());
+        try!(parser.expect(&token::Comma));
         let p2_sp = parser.span;
-        let p2 = parser.parse_ident();
-        parser.expect(&token::CloseDelim(token::Paren));
-        let body = parser.parse_block();
+        let p2 = try!(parser.parse_ident());
+        try!(parser.expect(&token::CloseDelim(token::Paren)));
+        let body = try!(parser.parse_block());
         let hi = parser.last_span.hi;
         cx.item_fn(codemap::mk_sp(lo, hi), range_fn_id, vec![
             cx.arg(p1_sp, p1, span_ty.clone()),
@@ -473,7 +470,7 @@ fn expand_parser<'a>(
     let mut start = None;
     while !parser.check(&token::Eof) {
         // parse "LHS: Type {"
-        let lhs = parser.parse_ident().name;
+        let lhs = try!(parser.parse_ident()).name;
         if start.is_none() {
             start = Some(lhs);
         }
@@ -481,10 +478,10 @@ fn expand_parser<'a>(
             let sp = parser.last_span;
             parser.span_err(sp, "duplicate nonterminal");
         }
-        parser.expect(&token::Colon);
-        let ty = parser.parse_ty();
+        try!(parser.expect(&token::Colon));
+        let ty = try!(parser.parse_ty_nopanic());
         types.insert(lhs, ty);
-        parser.expect(&token::OpenDelim(token::Brace));
+        try!(parser.expect(&token::OpenDelim(token::Brace)));
         let mut rhss = Vec::new();
         while !parser.check(&token::CloseDelim(token::Brace)) {
             let mut exclusions = BTreeSet::new();
@@ -509,22 +506,20 @@ fn expand_parser<'a>(
                 }
             }
             let lo = parser.span.lo;
-            let (rule, binds): (Vec<_>, Vec<_>) = iter::Unfold::new((), |_| {
-                if parser.check(&token::FatArrow) {
-                    return None;
-                }
+            let (mut rule, mut binds) = (vec![], vec![]);
+            while !parser.check(&token::FatArrow) {
                 let lo = parser.span.lo;
-                let name = parser.parse_ident();
-                let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
-                    let r = parser.parse_pat();
-                    parser.expect(&token::CloseDelim(token::Bracket));
+                let name = try!(parser.parse_ident());
+                let bind = if try!(parser.eat(&token::OpenDelim(token::Bracket))) {
+                    let r = try!(parser.parse_pat_nopanic());
+                    try!(parser.expect(&token::CloseDelim(token::Bracket)));
                     Binding::Pat(r)
-                } else if parser.eat(&token::OpenDelim(token::Paren)) {
+                } else if try!(parser.eat(&token::OpenDelim(token::Paren))) {
                     let mut pats = vec![];
-                    while !parser.eat(&token::CloseDelim(token::Paren)) {
-                        pats.push(parser.parse_pat());
-                        if !parser.eat(&token::Comma) {
-                            parser.expect(&token::CloseDelim(token::Paren));
+                    while !try!(parser.eat(&token::CloseDelim(token::Paren))) {
+                        pats.push(try!(parser.parse_pat_nopanic()));
+                        if !try!(parser.eat(&token::Comma)) {
+                            try!(parser.expect(&token::CloseDelim(token::Paren)));
                             break;
                         }
                     }
@@ -532,13 +527,15 @@ fn expand_parser<'a>(
                 } else {
                     Binding::None
                 };
-                Some((name, bind))
-            }).unzip();
+                rule.push(name);
+                binds.push(bind);
+            }
+            let (rule, binds) = (rule, binds);
 
-            parser.expect(&token::FatArrow);
+            try!(parser.expect(&token::FatArrow));
 
             // start parsing the expr
-            let expr = parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR);
+            let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR));
             let optional_comma =
                 // don't need a comma for blocks...
                 classify::expr_is_simple_block(&*expr)
@@ -547,11 +544,11 @@ fn expand_parser<'a>(
 
             if optional_comma {
                 // consume optional comma
-                parser.eat(&token::Comma);
+                try!(parser.eat(&token::Comma));
             } else {
                 // comma required
                 // `expr` may not be complete, so continue parsing until the comma or close-brace
-                parser.commit_expr(&*expr, &[token::Comma], &[token::CloseDelim(token::Brace)]);
+                try!(parser.commit_expr(&*expr, &[token::Comma], &[token::CloseDelim(token::Brace)]));
             }
             let sp = codemap::mk_sp(lo, parser.last_span.hi);
 
@@ -564,7 +561,7 @@ fn expand_parser<'a>(
                 priority: priority,
             }));
         }
-        parser.expect(&token::CloseDelim(token::Brace));
+        try!(parser.expect(&token::CloseDelim(token::Brace)));
         rules.insert(lhs, rhss);
     }
     let mut rules: BTreeMap<ast::Name, Vec<_>> = rules.into_iter().map(|(lhs, rhss)| {
@@ -586,11 +583,12 @@ fn expand_parser<'a>(
     }).collect();
     let start = start.expect("need at least one nonterminal");
     let fake_start = token::gensym("start");
+    let unreachable = cx.expr_unreachable(DUMMY_SP);
     rules.insert(fake_start, vec![Rhs {
         syms: vec![Nonterminal(start)],
         act: Action {
             binds: vec![],
-            expr: cx.expr_unreachable(DUMMY_SP),
+            expr: unreachable.clone(),
             span: DUMMY_SP,
             exclusions: BTreeSet::new(),
             exclude_eof: false,
@@ -601,7 +599,7 @@ fn expand_parser<'a>(
         rules: rules,
         start: fake_start,
     };
-    let r = lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
+    let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
             cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
         },
@@ -622,7 +620,7 @@ fn expand_parser<'a>(
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
                             cx.arm(sp, vec![cx.pat(sp, ast::PatEnum(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
-                            quote_arm!(cx, _ => unsafe { ::std::intrinsics::unreachable() },),
+                            quote_arm!(cx, _ => $unreachable,),
                         ]);
                         Some(cx.pat_ident(sp, id))
                     }
@@ -635,7 +633,7 @@ fn expand_parser<'a>(
                 let rule_str = pretty_rule(*lhs, syms);
                 let rule_str = &*rule_str;
                 expr = cx.expr_block(
-                    cx.block(DUMMY_SP, vec![quote_stmt!(cx, println!("reduce by {}", $rule_str);)], Some(expr)));
+                    cx.block(DUMMY_SP, vec![quote_stmt!(cx, println!("reduce by {}", $rule_str);).unwrap()], Some(expr)));
             }
 
             (expr, args, act.span)
@@ -647,7 +645,7 @@ fn expand_parser<'a>(
             }
         },
         |act, _| act.priority
-    ).unwrap_or_else(|conflict| {
+    ).or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
                     cx.span_err(sp, &*format!("reduce-reduce conflict:
@@ -655,16 +653,17 @@ state: {}
 token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
                     cx.span_note(r1.1.act.span, "conflicting rule");
                     cx.span_note(r2.1.act.span, "conflicting rule");
-                    panic!(FatalError)
+                    Err(FatalError)
                 }
                 LR1Conflict::ShiftReduce { state, token, rule } => {
-                    cx.span_fatal(rule.1.act.span, &*format!("shift-reduce conflict:
+                    cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
 state: {}
-token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")))
+token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
+                    Err(FatalError)
                 }
             }
-        });
-    base::MacItems::new(Some(r).into_iter())
+        }));
+    Ok(base::MacEager::items(SmallVector::one(r)))
 }
 
 fn expand_current_span<'a>(
@@ -675,7 +674,7 @@ fn expand_current_span<'a>(
     if tts.len() > 0 {
         cx.span_err(sp, "extra arguments to span!()");
     }
-    base::MacExpr::new(if SPAN_ID.is_set() {
+    base::MacEager::expr(if SPAN_ID.is_set() {
         cx.expr_method_call(sp, cx.expr_ident(sp, SPAN_ID.with(|&id| id)), cx.ident_of("unwrap"), vec![])
     } else {
         cx.span_err(sp, "span!() called outside the scope of a reduction rule");
@@ -685,6 +684,6 @@ fn expand_current_span<'a>(
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut rustc::plugin::Registry) {
-    reg.register_syntax_extension(token::intern("parser"), base::SyntaxExtension::IdentTT(Box::new(expand_parser) as Box<base::IdentMacroExpander + 'static>, None));
+    reg.register_syntax_extension(token::intern("parser"), base::SyntaxExtension::IdentTT(Box::new(expand_parser) as Box<base::IdentMacroExpander + 'static>, None, true));
     reg.register_macro("span", expand_current_span);
 }

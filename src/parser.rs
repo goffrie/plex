@@ -1,10 +1,3 @@
-#![crate_type="dylib"]
-#![feature(plugin_registrar, quote, rustc_private, scoped_tls)]
-
-extern crate lalr;
-extern crate syntax;
-extern crate rustc;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write;

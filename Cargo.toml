@@ -1,0 +1,25 @@
+[package]
+
+name = "plex"
+version = "0.0.1"
+authors = ["Geoffry Song <goffrie@gmail.com>"]
+
+homepage = "https://github.com/goffrie/plex"
+repository = "https://github.com/goffrie/plex"
+documentation = "http://goffrie.github.io/plex"
+license = "MIT"
+keywords = ["tokenizer", "scanner", "lexer", "parser", "generator"]
+
+[lib]
+
+name = "plex"
+plugin = true
+crate-type = ["dylib"]
+
+[dependencies.lalr]
+
+git = "https://github.com/goffrie/lalr"
+
+[dependencies.regex-dfa]
+
+git = "https://github.com/goffrie/regex-dfa"

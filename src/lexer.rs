@@ -1,10 +1,3 @@
-#![crate_type="dylib"]
-#![feature(plugin_registrar, quote, rustc_private, collections)]
-
-extern crate regex_dfa;
-extern crate syntax;
-extern crate rustc;
-
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
 use syntax::{codemap, ast, owned_slice};

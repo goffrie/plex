@@ -1,0 +1,18 @@
+[root]
+name = "plex"
+version = "0.0.1"
+dependencies = [
+ "lalr 0.0.1 (git+https://github.com/goffrie/lalr)",
+ "regex-dfa 0.0.1 (git+https://github.com/goffrie/regex-dfa)",
+]
+
+[[package]]
+name = "lalr"
+version = "0.0.1"
+source = "git+https://github.com/goffrie/lalr#00a6a4bec8095c725646baa746d948120879aae9"
+
+[[package]]
+name = "regex-dfa"
+version = "0.0.1"
+source = "git+https://github.com/goffrie/regex-dfa#cea8caf0c532a577ed7f6c2b91fd44c0a8cf6614"
+

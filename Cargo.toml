@@ -16,6 +16,11 @@ name = "plex"
 plugin = true
 crate-type = ["dylib"]
 
+[[bin]]
+
+name = "demo"
+doc = false
+
 [dependencies.lalr]
 
 git = "https://github.com/goffrie/lalr"

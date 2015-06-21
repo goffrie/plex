@@ -89,8 +89,8 @@ where T: Ord + fmt::Debug + fmt::Display,
       A: fmt::Debug,
       FM: FnMut(&T, &base::ExtCtxt) -> P<ast::Pat>,
       FA: FnMut(&N, &A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
-      FR: FnMut(&A, Option<&T>) -> bool,
-      FO: FnMut(&A, Option<&T>) -> i32,
+      FR: FnMut(&Rhs<T, N, A>, Option<&T>) -> bool,
+      FO: FnMut(&Rhs<T, N, A>, Option<&T>) -> i32,
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
@@ -371,20 +371,18 @@ where T: Ord + fmt::Debug + fmt::Display,
     Ok(cx.item_fn_poly(DUMMY_SP, name, args, out_ty, generics, body))
 }
 
-fn expand_parser<'a>(
+pub fn expand_parser<'a>(
     cx: &'a mut base::ExtCtxt,
     sp: codemap::Span,
-    name: ast::Ident,
-    tts: Vec<ast::TokenTree>
+    tts: &[ast::TokenTree]
 ) -> Box<base::MacResult + 'a> {
-    parse_parser(cx, sp, name, tts).unwrap_or_else(|_| base::DummyResult::any(sp))
+    parse_parser(cx, sp, tts).unwrap_or_else(|_| base::DummyResult::any(sp))
 }
 
 fn parse_parser<'a>(
     cx: &'a mut base::ExtCtxt,
     sp: codemap::Span,
-    name: ast::Ident,
-    tts: Vec<ast::TokenTree>
+    tts: &[ast::TokenTree]
 ) -> PResult<Box<base::MacResult + 'a>> {
     #[derive(Debug)]
     enum Binding {
@@ -433,11 +431,16 @@ fn parse_parser<'a>(
         r
     }
 
-    let mut parser = cx.new_parser_from_tts(&*tts);
-    let token_ty = try!(parser.parse_ty_nopanic());
-    try!(parser.expect(&token::Semi));
+    let mut parser = cx.new_parser_from_tts(tts);
 
+    // parse 'fn name_of_parser(Token, Span);'
+    try!(parser.expect_keyword(token::keywords::Fn));
+    let name = try!(parser.parse_ident());
+    try!(parser.expect(&token::OpenDelim(token::Paren)));
+    let token_ty = try!(parser.parse_ty_nopanic());
+    try!(parser.expect(&token::Comma));
     let span_ty = try!(parser.parse_ty_nopanic());
+    try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::Semi));
 
     let range_fn_id = token::gensym_ident("range");
@@ -528,7 +531,7 @@ fn parse_parser<'a>(
             try!(parser.expect(&token::FatArrow));
 
             // start parsing the expr
-            let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR));
+            let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR));
             let optional_comma =
                 // don't need a comma for blocks...
                 classify::expr_is_simple_block(&*expr)
@@ -631,13 +634,13 @@ fn parse_parser<'a>(
 
             (expr, args, act.span)
         },
-        |act, token| {
+        |rhs, token| {
             match token {
-                Some(id) => !act.exclusions.contains(id.as_str()),
-                None => !act.exclude_eof,
+                Some(id) => !rhs.act.exclusions.contains(id.as_str()),
+                None => !rhs.act.exclude_eof,
             }
         },
-        |act, _| act.priority
+        |rhs, _| rhs.act.priority
     ).or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
@@ -659,7 +662,7 @@ token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("
     Ok(base::MacEager::items(SmallVector::one(r)))
 }
 
-fn expand_current_span<'a>(
+pub fn expand_current_span<'a>(
     cx: &'a mut base::ExtCtxt,
     sp: codemap::Span,
     tts: &[ast::TokenTree]
@@ -667,16 +670,10 @@ fn expand_current_span<'a>(
     if tts.len() > 0 {
         cx.span_err(sp, "extra arguments to span!()");
     }
-    base::MacEager::expr(if SPAN_ID.is_set() {
-        cx.expr_method_call(sp, cx.expr_ident(sp, SPAN_ID.with(|&id| id)), cx.ident_of("unwrap"), vec![])
+    if SPAN_ID.is_set() {
+        base::MacEager::expr(cx.expr_method_call(sp, cx.expr_ident(sp, SPAN_ID.with(|&id| id)), cx.ident_of("unwrap"), vec![]))
     } else {
         cx.span_err(sp, "span!() called outside the scope of a reduction rule");
-        cx.expr_ident(sp, cx.ident_of("dummy_span"))
-    })
-}
-
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut rustc::plugin::Registry) {
-    reg.register_syntax_extension(token::intern("parser"), base::SyntaxExtension::IdentTT(Box::new(expand_parser) as Box<base::IdentMacroExpander + 'static>, None, true));
-    reg.register_macro("span", expand_current_span);
+        base::DummyResult::expr(sp)
+    }
 }

@@ -434,6 +434,11 @@ fn parse_parser<'a>(
     let mut parser = cx.new_parser_from_tts(tts);
 
     // parse 'fn name_of_parser(Token, Span);'
+    let visibility = if try!(parser.eat_keyword(token::keywords::Pub)) {
+        ast::Public
+    } else {
+        ast::Inherited
+    };
     try!(parser.expect_keyword(token::keywords::Fn));
     let name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
@@ -595,7 +600,7 @@ fn parse_parser<'a>(
         rules: rules,
         start: fake_start,
     };
-    let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
+    let r = try!(lr1_machine(cx,  &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
             cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
         },
@@ -658,7 +663,7 @@ token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("
                     Err(FatalError)
                 }
             }
-        }));
+        })).map(|mut item| { item.vis = visibility; item} );
     Ok(base::MacEager::items(SmallVector::one(r)))
 }
 

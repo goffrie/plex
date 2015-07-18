@@ -76,6 +76,11 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
     let mut parser = cx.new_parser_from_tts(args);
 
     // first: parse 'fn name_of_lexer(text_variable) -> ResultType;'
+    let visibility = if try!(parser.eat_keyword(token::keywords::Pub)) {
+        ast::Public
+    } else {
+        ast::Inherited
+    };
     try!(parser.expect_keyword(token::keywords::Fn));
     let fn_name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
@@ -227,6 +232,6 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
                 }
             }))
         )
-    );
+    ).map(|mut item| { item.vis = visibility; item });
     Ok(base::MacEager::items(SmallVector::one(final_fn)))
 }

@@ -226,7 +226,6 @@ where T: Ord + fmt::Debug + fmt::Display,
                         init: Some(quote_expr!(cx, *$stack_id.pop().unwrap().downcast::<$ty>().unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
-                        source: ast::LocalLet,
                     });
                     P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
                 }
@@ -641,7 +640,7 @@ fn parse_parser<'a>(
         },
         |rhs, token| {
             match token {
-                Some(id) => !rhs.act.exclusions.contains(id.as_str()),
+                Some(id) => !rhs.act.exclusions.contains(&id.name.to_string()),
                 None => !rhs.act.exclude_eof,
             }
         },
@@ -651,7 +650,9 @@ fn parse_parser<'a>(
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
                     cx.span_err(sp, &*format!("reduce-reduce conflict:
 state: {}
-token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
+token: {}", pretty(&state, "       "),
+            match token { Some(id) => id.name.to_string(),
+                          None     => "EOF".to_string() }));
                     cx.span_note(r1.1.act.span, "conflicting rule");
                     cx.span_note(r2.1.act.span, "conflicting rule");
                     Err(FatalError)
@@ -659,7 +660,9 @@ token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("
                 LR1Conflict::ShiftReduce { state, token, rule } => {
                     cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
 state: {}
-token: {}", pretty(&state, "       "), token.map(ast::Ident::as_str).unwrap_or("EOF")));
+token: {}", pretty(&state, "       "),
+            match token { Some(id) => id.name.to_string(),
+                          None     => "EOF".to_string() }));
                     Err(FatalError)
                 }
             }

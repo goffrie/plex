@@ -226,7 +226,6 @@ where T: Ord + fmt::Debug + fmt::Display,
                         init: Some(quote_expr!(cx, *$stack_id.pop().unwrap().downcast::<$ty>().unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
-                        source: ast::LocalLet,
                     });
                     P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
                 }

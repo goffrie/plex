@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, rustc_private, map_in_place, scoped_tls)]
+#![feature(plugin_registrar, quote, rustc_private, scoped_tls)]
 
 extern crate lalr;
 extern crate regex_dfa;

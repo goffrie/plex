@@ -200,7 +200,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
             },
         },
         cx.block(DUMMY_SP,
-            helpers.map_in_place(|x| cx.stmt_item(DUMMY_SP, x)),
+            helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x)).collect(),
             Some(quote_expr!(cx, {
                 let mut state = 0;
                 let mut remaining = input.char_indices();

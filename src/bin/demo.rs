@@ -1,4 +1,4 @@
-#![feature(plugin, subslice_offset)]
+#![feature(plugin)]
 #![plugin(plex)]
 
 use std::io::Read;
@@ -75,7 +75,7 @@ mod lexer {
     }
 
     fn span_in(s: &str, t: &str) -> Span {
-        let lo = t.subslice_offset(s);
+        let lo = s.as_ptr() as usize - t.as_ptr() as usize;
         Span {
             lo: lo,
             hi: lo + s.len(),

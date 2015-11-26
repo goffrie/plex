@@ -84,7 +84,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
     try!(parser.expect_keyword(token::keywords::Fn));
     let fn_name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
-    let text_pat = try!(parser.parse_pat_nopanic());
+    let text_pat = try!(parser.parse_pat());
     let text_lt = if try!(parser.eat(&token::Colon)) {
         try!(parser.parse_lifetime())
     } else {
@@ -92,7 +92,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
     };
     try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::RArrow));
-    let ret_ty = try!(parser.parse_ty_nopanic());
+    let ret_ty = try!(parser.parse_ty());
     try!(parser.expect(&token::Semi));
 
     // now parse the token arms

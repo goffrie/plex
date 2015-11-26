@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+use std::{fmt,cmp};
 use std::fmt::Write;
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
 use syntax::{ast, owned_slice, codemap};
 use syntax::parse::{parser, token, classify, PResult};
-use syntax::parse::attr::ParserAttr;
+//use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use syntax::fold::Folder;
@@ -26,6 +26,32 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
+#[derive(PartialEq, Eq, Copy, Clone)]
+struct UnhygienicIdent(ast::Ident);
+
+impl PartialOrd for UnhygienicIdent {
+    fn partial_cmp(&self, other: &UnhygienicIdent) -> Option<cmp::Ordering> {
+        self.0.name.partial_cmp(&other.0.name)
+    }
+}
+
+impl Ord for UnhygienicIdent {
+    fn cmp(&self, other: &UnhygienicIdent) -> cmp::Ordering {
+        self.0.name.cmp(&other.0.name)
+    }
+}
+
+impl fmt::Debug for UnhygienicIdent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for UnhygienicIdent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 fn most_frequent<T: Ord, I: Iterator<Item=T>>(it: I) -> Option<T> {
     let mut freq = BTreeMap::new();
@@ -400,7 +426,7 @@ fn parse_parser<'a>(
         priority: i32,
     }
 
-    fn pretty_rule(lhs: ast::Name, syms: &[Symbol<ast::Ident, ast::Name>]) -> String {
+    fn pretty_rule(lhs: ast::Name, syms: &[Symbol<UnhygienicIdent, ast::Name>]) -> String {
         let mut r = String::new();
         let _ = write!(&mut r, "{} ->", lhs);
         for sym in syms.iter() {
@@ -409,7 +435,7 @@ fn parse_parser<'a>(
         r
     }
     // Pretty-print an item set, for error messages.
-    fn pretty(x: &ItemSet<ast::Ident, ast::Name, Action>, pad: &str) -> String {
+    fn pretty(x: &ItemSet<UnhygienicIdent, ast::Name, Action>, pad: &str) -> String {
         let mut r = String::new();
         let mut first = true;
         for item in x.items.iter() {
@@ -441,9 +467,9 @@ fn parse_parser<'a>(
     try!(parser.expect_keyword(token::keywords::Fn));
     let name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
-    let token_ty = try!(parser.parse_ty_nopanic());
+    let token_ty = try!(parser.parse_ty());
     try!(parser.expect(&token::Comma));
-    let span_ty = try!(parser.parse_ty_nopanic());
+    let span_ty = try!(parser.parse_ty());
     try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::Semi));
 
@@ -479,7 +505,7 @@ fn parse_parser<'a>(
             parser.span_err(sp, "duplicate nonterminal");
         }
         try!(parser.expect(&token::Colon));
-        let ty = try!(parser.parse_ty_nopanic());
+        let ty = try!(parser.parse_ty());
         types.insert(lhs, ty);
         try!(parser.expect(&token::OpenDelim(token::Brace)));
         let mut rhss = Vec::new();
@@ -488,7 +514,7 @@ fn parse_parser<'a>(
             let mut priority = 0;
             while parser.check(&token::Pound) {
                 // attributes
-                let attr = parser.parse_attribute(false); // don't allow "#![..]" syntax
+                let attr = try!(parser.parse_attribute(false)); // don't allow "#![..]" syntax
                 match attr.node.value.node {
                     ast::MetaList(ref name, ref tokens) if name == &"no_reduce" => {
                         for token in tokens.iter() {
@@ -509,15 +535,15 @@ fn parse_parser<'a>(
             let (mut rule, mut binds) = (vec![], vec![]);
             while !parser.check(&token::FatArrow) {
                 let lo = parser.span.lo;
-                let name = try!(parser.parse_ident());
+                let name = UnhygienicIdent(try!(parser.parse_ident()));
                 let bind = if try!(parser.eat(&token::OpenDelim(token::Bracket))) {
-                    let r = try!(parser.parse_pat_nopanic());
+                    let r = try!(parser.parse_pat());
                     try!(parser.expect(&token::CloseDelim(token::Bracket)));
                     Binding::Pat(r)
                 } else if try!(parser.eat(&token::OpenDelim(token::Paren))) {
                     let mut pats = vec![];
                     while !try!(parser.eat(&token::CloseDelim(token::Paren))) {
-                        pats.push(try!(parser.parse_pat_nopanic()));
+                        pats.push(try!(parser.parse_pat()));
                         if !try!(parser.eat(&token::Comma)) {
                             try!(parser.expect(&token::CloseDelim(token::Paren)));
                             break;
@@ -568,8 +594,8 @@ fn parse_parser<'a>(
         let rhss = rhss.into_iter().map(|(rule, act)| {
             // figure out which symbols in `rule` are nonterminals vs terminals
             let syms = rule.into_iter().map(|ident| {
-                if types.contains_key(&ident.name) {
-                    Nonterminal(ident.name)
+                if types.contains_key(&ident.0.name) {
+                    Nonterminal(ident.0.name)
                 } else {
                     Terminal(ident)
                 }
@@ -599,9 +625,9 @@ fn parse_parser<'a>(
         rules: rules,
         start: fake_start,
     };
-    let r = try!(lr1_machine(cx,  &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
+    let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
-            cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident), None))
+            cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident.0), None))
         },
         |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
@@ -616,7 +642,7 @@ fn parse_parser<'a>(
                                 cx.span_err(sp, "can't bind enum case to a nonterminal");
                                 token::gensym_ident("error")
                             }
-                            Terminal(x) => x
+                            Terminal(x) => x.0
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
                             cx.arm(sp, vec![cx.pat(sp, ast::PatEnum(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
@@ -640,7 +666,7 @@ fn parse_parser<'a>(
         },
         |rhs, token| {
             match token {
-                Some(id) => !rhs.act.exclusions.contains(&id.name.to_string()),
+                Some(id) => !rhs.act.exclusions.contains(&id.0.name.to_string()),
                 None => !rhs.act.exclude_eof,
             }
         },
@@ -651,7 +677,7 @@ fn parse_parser<'a>(
                     cx.span_err(sp, &*format!("reduce-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
-            match token { Some(id) => id.name.to_string(),
+            match token { Some(id) => id.0.name.to_string(),
                           None     => "EOF".to_string() }));
                     cx.span_note(r1.1.act.span, "conflicting rule");
                     cx.span_note(r2.1.act.span, "conflicting rule");
@@ -661,7 +687,7 @@ token: {}", pretty(&state, "       "),
                     cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
-            match token { Some(id) => id.name.to_string(),
+            match token { Some(id) => id.0.name.to_string(),
                           None     => "EOF".to_string() }));
                     Err(FatalError)
                 }

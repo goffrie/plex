@@ -56,7 +56,7 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P
     cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], u32_ty.clone(), block)
 }
 
-fn parse_str_interior(parser: &mut parser::Parser) -> PResult<String> {
+fn parse_str_interior<'a>(parser: &mut parser::Parser<'a>) -> PResult<'a, String> {
     let (re_str, style) = try!(parser.parse_str());
     Ok(match style {
         ast::CookedStr => parse::str_lit(&re_str),
@@ -72,11 +72,11 @@ pub fn expand_lexer<'cx>(cx: &'cx mut base::ExtCtxt, sp: codemap::Span, args: &[
     parse_lexer(cx, sp, args).unwrap_or_else(|_| base::DummyResult::any(sp))
 }
 
-fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree]) -> PResult<Box<base::MacResult+'static>>  {
+fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::TokenTree]) -> PResult<'a, Box<base::MacResult+'static>>  {
     let mut parser = cx.new_parser_from_tts(args);
 
     // first: parse 'fn name_of_lexer(text_variable) -> ResultType;'
-    let visibility = if try!(parser.eat_keyword(token::keywords::Pub)) {
+    let visibility = if parser.eat_keyword(token::keywords::Pub) {
         ast::Public
     } else {
         ast::Inherited
@@ -85,7 +85,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
     let fn_name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
     let text_pat = try!(parser.parse_pat());
-    let text_lt = if try!(parser.eat(&token::Colon)) {
+    let text_lt = if parser.eat(&token::Colon) {
         try!(parser.parse_lifetime())
     } else {
         cx.lifetime(DUMMY_SP, token::gensym("text"))
@@ -116,7 +116,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
         try!(parser.expect(&token::FatArrow));
 
         // start parsing the expr
-        let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR));
+        let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR, None));
         let optional_comma =
             // don't need a comma for blocks...
             classify::expr_is_simple_block(&*expr)
@@ -125,7 +125,7 @@ fn parse_lexer(cx: &mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree
 
         if optional_comma {
             // consume optional comma
-            try!(parser.eat(&token::Comma));
+            parser.eat(&token::Comma);
         } else {
             // comma required
             // `expr` may not be complete, so continue parsing until the comma (or eof)

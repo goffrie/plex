@@ -3,14 +3,14 @@
 extern crate lalr;
 extern crate regex_dfa;
 extern crate syntax;
-extern crate rustc;
+extern crate rustc_plugin;
 
 pub mod lexer;
 pub mod parser;
 
 use syntax::ext::base;
 use syntax::parse::token;
-use rustc::plugin;
+use rustc_plugin as plugin;
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut plugin::Registry) {

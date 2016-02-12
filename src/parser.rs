@@ -9,7 +9,6 @@ use syntax::parse::{parser, token, classify, PResult};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use syntax::fold::Folder;
-use syntax::diagnostic::FatalError;
 use lalr::*;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
@@ -157,7 +156,8 @@ where T: Ord + fmt::Debug + fmt::Display,
     let args = vec![
         ast::Arg {
             ty: it_ty,
-            pat: cx.pat_ident_binding_mode(DUMMY_SP, it_arg_id, ast::BindByValue(ast::MutMutable)),
+            pat: cx.pat_ident_binding_mode(DUMMY_SP, it_arg_id,
+                                           ast::BindingMode::ByValue(ast::Mutability::MutMutable)),
             id: DUMMY_NODE_ID,
         }
     ];
@@ -252,6 +252,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                         init: Some(quote_expr!(cx, *$stack_id.pop().unwrap().downcast::<$ty>().unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
+                        attrs: None,
                     });
                     P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
                 }
@@ -405,10 +406,10 @@ pub fn expand_parser<'a>(
 }
 
 fn parse_parser<'a>(
-    cx: &'a mut base::ExtCtxt,
+    cx: &mut base::ExtCtxt<'a>,
     sp: codemap::Span,
     tts: &[ast::TokenTree]
-) -> PResult<Box<base::MacResult + 'a>> {
+) -> PResult<'a, Box<base::MacResult + 'a>> {
     #[derive(Debug)]
     enum Binding {
         Pat(P<ast::Pat>),
@@ -459,7 +460,7 @@ fn parse_parser<'a>(
     let mut parser = cx.new_parser_from_tts(tts);
 
     // parse 'fn name_of_parser(Token, Span);'
-    let visibility = if try!(parser.eat_keyword(token::keywords::Pub)) {
+    let visibility = if parser.eat_keyword(token::keywords::Pub) {
         ast::Public
     } else {
         ast::Inherited
@@ -536,15 +537,15 @@ fn parse_parser<'a>(
             while !parser.check(&token::FatArrow) {
                 let lo = parser.span.lo;
                 let name = UnhygienicIdent(try!(parser.parse_ident()));
-                let bind = if try!(parser.eat(&token::OpenDelim(token::Bracket))) {
+                let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
                     let r = try!(parser.parse_pat());
                     try!(parser.expect(&token::CloseDelim(token::Bracket)));
                     Binding::Pat(r)
-                } else if try!(parser.eat(&token::OpenDelim(token::Paren))) {
+                } else if parser.eat(&token::OpenDelim(token::Paren)) {
                     let mut pats = vec![];
-                    while !try!(parser.eat(&token::CloseDelim(token::Paren))) {
+                    while !parser.eat(&token::CloseDelim(token::Paren)) {
                         pats.push(try!(parser.parse_pat()));
-                        if !try!(parser.eat(&token::Comma)) {
+                        if !parser.eat(&token::Comma) {
                             try!(parser.expect(&token::CloseDelim(token::Paren)));
                             break;
                         }
@@ -561,7 +562,7 @@ fn parse_parser<'a>(
             try!(parser.expect(&token::FatArrow));
 
             // start parsing the expr
-            let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR));
+            let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR, None));
             let optional_comma =
                 // don't need a comma for blocks...
                 classify::expr_is_simple_block(&*expr)
@@ -570,7 +571,7 @@ fn parse_parser<'a>(
 
             if optional_comma {
                 // consume optional comma
-                try!(parser.eat(&token::Comma));
+                parser.eat(&token::Comma);
             } else {
                 // comma required
                 // `expr` may not be complete, so continue parsing until the comma or close-brace
@@ -674,14 +675,15 @@ fn parse_parser<'a>(
     ).or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
-                    cx.span_err(sp, &*format!("reduce-reduce conflict:
+                    let mut err = parser.diagnostic().struct_span_err(
+                        sp, &*format!("reduce-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
             match token { Some(id) => id.0.name.to_string(),
                           None     => "EOF".to_string() }));
-                    cx.span_note(r1.1.act.span, "conflicting rule");
-                    cx.span_note(r2.1.act.span, "conflicting rule");
-                    Err(FatalError)
+                    err.span_note(r1.1.act.span, "conflicting rule");
+                    err.span_note(r2.1.act.span, "conflicting rule");
+                    Err(err)
                 }
                 LR1Conflict::ShiftReduce { state, token, rule } => {
                     cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
@@ -689,7 +691,7 @@ state: {}
 token: {}", pretty(&state, "       "),
             match token { Some(id) => id.0.name.to_string(),
                           None     => "EOF".to_string() }));
-                    Err(FatalError)
+                    Err(cx.struct_span_err(rule.1.act.span, "shift-reduce"))
                 }
             }
         })).map(|mut item| { item.vis = visibility; item} );

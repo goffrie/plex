@@ -1,3 +1,4 @@
+#![allow(match_of_unit_variant_via_paren_dotdot)]
 #![feature(plugin)]
 #![plugin(plex)]
 

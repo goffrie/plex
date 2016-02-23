@@ -16,10 +16,10 @@ use syntax::ast::DUMMY_NODE_ID;
 scoped_thread_local!(static SPAN_ID: ast::Ident);
 
 fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyU32)))
+    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)))
 }
 fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitInt(val as u64, ast::UnsignedIntLit(ast::TyUs)))
+    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u64, ast::LitIntType::Unsigned(ast::UintTy::Us)))
 }
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
@@ -125,7 +125,7 @@ where T: Ord + fmt::Debug + fmt::Display,
     let it_ty_id = token::gensym_ident("I");
     let it_ty = cx.ty_ident(DUMMY_SP, it_ty_id);
     let u32_ty = quote_ty!(cx, u32);
-    let token_span_ty = cx.ty(DUMMY_SP, ast::TyTup(vec![
+    let token_span_ty = cx.ty(DUMMY_SP, ast::TyKind::Tup(vec![
         token_ty.clone(),
         span_ty.clone(),
     ]));
@@ -138,12 +138,12 @@ where T: Ord + fmt::Debug + fmt::Display,
                     cx.ident_of("iter"),
                     cx.ident_of("Iterator"),
                 ], vec![], vec![], vec![
-                    P(ast::TypeBinding {
+                    ast::TypeBinding {
                         id: DUMMY_NODE_ID,
                         ident: cx.ident_of("Item"),
                         ty: token_span_ty.clone(),
                         span: DUMMY_SP,
-                    })
+                    }
                 ]))
             ]), None)
         ]),
@@ -157,7 +157,7 @@ where T: Ord + fmt::Debug + fmt::Display,
         ast::Arg {
             ty: it_ty,
             pat: cx.pat_ident_binding_mode(DUMMY_SP, it_arg_id,
-                                           ast::BindingMode::ByValue(ast::Mutability::MutMutable)),
+                                           ast::BindingMode::ByValue(ast::Mutability::Mutable)),
             id: DUMMY_NODE_ID,
         }
     ];
@@ -212,19 +212,19 @@ where T: Ord + fmt::Debug + fmt::Display,
         for rhs in rhss.iter() {
             let (result, arg_pats, span) = to_expr(lhs, &rhs.act, cx, &rhs.syms);
             let args = vec![ast::Arg {
-                ty: cx.ty_rptr(DUMMY_SP, stack_ty.clone(), None, ast::MutMutable),
+                ty: cx.ty_rptr(DUMMY_SP, stack_ty.clone(), None, ast::Mutability::Mutable),
                 pat: cx.pat_ident(DUMMY_SP, stack_id),
                 id: DUMMY_NODE_ID,
             }, ast::Arg {
-                ty: cx.ty_rptr(DUMMY_SP, span_stack_ty.clone(), None, ast::MutMutable),
+                ty: cx.ty_rptr(DUMMY_SP, span_stack_ty.clone(), None, ast::Mutability::Mutable),
                 pat: cx.pat_ident(DUMMY_SP, span_stack_id),
                 id: DUMMY_NODE_ID,
             }, ast::Arg {
-                ty: cx.ty_rptr(DUMMY_SP, state_stack_ty.clone(), None, ast::MutMutable),
+                ty: cx.ty_rptr(DUMMY_SP, state_stack_ty.clone(), None, ast::Mutability::Mutable),
                 pat: cx.pat_ident(DUMMY_SP, state_stack_id),
                 id: DUMMY_NODE_ID,
             }, ast::Arg {
-                ty: cx.ty_rptr(DUMMY_SP, u32_ty.clone(), None, ast::MutMutable),
+                ty: cx.ty_rptr(DUMMY_SP, u32_ty.clone(), None, ast::Mutability::Mutable),
                 pat: cx.pat_ident(DUMMY_SP, state_id),
                 id: DUMMY_NODE_ID,
             }];
@@ -254,7 +254,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                         span: DUMMY_SP,
                         attrs: None,
                     });
-                    P(codemap::respan(DUMMY_SP, ast::StmtDecl(P(codemap::respan(DUMMY_SP, ast::DeclLocal(local))), DUMMY_NODE_ID)))
+                    codemap::respan(DUMMY_SP, ast::StmtKind::Decl(P(codemap::respan(DUMMY_SP, ast::DeclKind::Local(local))), DUMMY_NODE_ID))
                 }
                 None => cx.stmt_expr(cx.expr_method_call(DUMMY_SP,
                                                          cx.expr_ident(DUMMY_SP, stack_id),
@@ -279,7 +279,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             };
 
             let tmp = token::gensym_ident("result");
-            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
+            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result).unwrap());
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
             ).unwrap());
@@ -461,9 +461,9 @@ fn parse_parser<'a>(
 
     // parse 'fn name_of_parser(Token, Span);'
     let visibility = if parser.eat_keyword(token::keywords::Pub) {
-        ast::Public
+        ast::Visibility::Public
     } else {
-        ast::Inherited
+        ast::Visibility::Inherited
     };
     try!(parser.expect_keyword(token::keywords::Fn));
     let name = try!(parser.parse_ident());
@@ -517,16 +517,16 @@ fn parse_parser<'a>(
                 // attributes
                 let attr = try!(parser.parse_attribute(false)); // don't allow "#![..]" syntax
                 match attr.node.value.node {
-                    ast::MetaList(ref name, ref tokens) if name == &"no_reduce" => {
+                    ast::MetaItemKind::List(ref name, ref tokens) if name == &"no_reduce" => {
                         for token in tokens.iter() {
-                            if let ast::MetaWord(ref name) = token.node {
+                            if let ast::MetaItemKind::Word(ref name) = token.node {
                                 exclusions.insert(name.to_string());
                             } else {
                                 parser.span_err(token.span, "not the name of a token");
                             }
                         }
                     }
-                    ast::MetaWord(ref name) if name == &"overriding" => {
+                    ast::MetaItemKind::Word(ref name) if name == &"overriding" => {
                         priority = 1;
                     }
                     _ => parser.span_err(attr.span, "unknown attribute"),
@@ -628,7 +628,7 @@ fn parse_parser<'a>(
     };
     let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
-            cx.pat(DUMMY_SP, ast::PatEnum(cx.path_ident(DUMMY_SP, ident.0), None))
+            cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), None))
         },
         |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
@@ -646,7 +646,7 @@ fn parse_parser<'a>(
                             Terminal(x) => x.0
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
-                            cx.arm(sp, vec![cx.pat(sp, ast::PatEnum(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
+                            cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
                             quote_arm!(cx, _ => $unreachable,),
                         ]);
                         Some(cx.pat_ident(sp, id))

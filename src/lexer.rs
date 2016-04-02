@@ -4,8 +4,8 @@ use syntax::{codemap, ast, owned_slice};
 use syntax::parse::{self, parser, token, classify, PResult};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
-use regex_dfa::Dfa;
-use regex_dfa::regex::Regex;
+use redfa::Dfa;
+use redfa::regex::Regex;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 

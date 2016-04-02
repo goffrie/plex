@@ -1,7 +1,7 @@
 #![feature(plugin_registrar, quote, rustc_private, scoped_tls)]
 
 extern crate lalr;
-extern crate regex_dfa;
+extern crate redfa;
 extern crate syntax;
 extern crate rustc_plugin;
 

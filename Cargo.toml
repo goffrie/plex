@@ -7,7 +7,7 @@ authors = ["Geoffry Song <goffrie@gmail.com>"]
 homepage = "https://github.com/goffrie/plex"
 repository = "https://github.com/goffrie/plex"
 documentation = "http://goffrie.github.io/plex"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 keywords = ["tokenizer", "scanner", "lexer", "parser", "generator"]
 
 [lib]
@@ -18,8 +18,8 @@ crate-type = ["dylib"]
 
 [dependencies.lalr]
 
-git = "https://github.com/goffrie/lalr"
+version = "0.0.1"
 
-[dependencies.regex-dfa]
+[dependencies.redfa]
 
-git = "https://github.com/goffrie/regex-dfa"
+version = "0.0.1"

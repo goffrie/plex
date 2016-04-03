@@ -1,9 +1,11 @@
-#![feature(plugin_registrar, quote, rustc_private, scoped_tls)]
+#![feature(plugin_registrar, quote, rustc_private)]
 
 extern crate lalr;
 extern crate redfa;
 extern crate syntax;
 extern crate rustc_plugin;
+#[macro_use]
+extern crate scoped_tls;
 
 pub mod lexer;
 pub mod parser;

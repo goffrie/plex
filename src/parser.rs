@@ -196,13 +196,9 @@ where T: Ord + fmt::Debug + fmt::Display,
             None
         }
     }).unwrap());
-    let stack_ty = quote_ty!(cx, ::std::vec::Vec<Box<::std::any::Any> >);
-    let span_stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
-        cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
-    ], vec![], vec![cx.ty_option(span_ty.clone())], vec![]));
-    let state_stack_ty = cx.ty_path(cx.path_all(DUMMY_SP, true, vec![
-        cx.ident_of("std"), cx.ident_of("vec"), cx.ident_of("Vec"),
-    ], vec![], vec![u32_ty.clone()], vec![]));
+    let stack_ty = quote_ty!(cx, Vec<Box<::std::any::Any> >);
+    let span_stack_ty = quote_ty!(cx, Vec<Option<$span_ty> >);
+    let state_stack_ty = quote_ty!(cx, Vec<u32>);
     for (lhs, rhss) in grammar.rules.iter() {
         if *lhs == grammar.start {
             continue;

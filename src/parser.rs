@@ -3,7 +3,7 @@ use std::{fmt,cmp};
 use std::fmt::Write;
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
-use syntax::{ast, owned_slice, codemap};
+use syntax::{ast, ptr, codemap};
 use syntax::parse::{parser, token, classify, PResult};
 //use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
@@ -131,8 +131,8 @@ where T: Ord + fmt::Debug + fmt::Display,
     ]));
     let generics = ast::Generics {
         lifetimes: vec![],
-        ty_params: owned_slice::OwnedSlice::from_vec(vec![
-            cx.typaram(DUMMY_SP, it_ty_id, owned_slice::OwnedSlice::from_vec(vec![
+        ty_params: ptr::P::from_vec(vec![
+            cx.typaram(DUMMY_SP, it_ty_id, ptr::P::from_vec(vec![
                 cx.typarambound(cx.path_all(DUMMY_SP, true, vec![
                     cx.ident_of("std"),
                     cx.ident_of("iter"),

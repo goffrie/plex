@@ -1,6 +1,6 @@
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
-use syntax::{codemap, ast, owned_slice};
+use syntax::{codemap, ast, ptr};
 use syntax::parse::{self, parser, token, classify, PResult};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
@@ -193,7 +193,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::T
                 lifetime: text_lt,
                 bounds: Vec::new(),
             }],
-            ty_params: owned_slice::OwnedSlice::empty(),
+            ty_params: ptr::P::new(),
             where_clause: ast::WhereClause {
                 id: DUMMY_NODE_ID,
                 predicates: Vec::new(),

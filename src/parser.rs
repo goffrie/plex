@@ -3,17 +3,15 @@ use std::{fmt,cmp};
 use std::fmt::Write;
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
+use syntax::util::ThinVec;
 use syntax::{ast, ptr, codemap};
 use syntax::parse::{parser, token, classify, PResult};
-//use syntax::parse::attr::ParserAttr;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
-use syntax::fold::Folder;
 use lalr::*;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
-
-scoped_thread_local!(static SPAN_ID: ast::Ident);
+use syntax::tokenstream::TokenTree;
 
 fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)))
@@ -82,19 +80,6 @@ fn expected_one_of<S: fmt::Display>(xs: &[S]) -> String {
     err_msg
 }
 
-struct DropSpanMarks;
-
-impl Folder for DropSpanMarks {
-    fn fold_ident(&mut self, id: ast::Ident) -> ast::Ident {
-        SPAN_ID.with(|&span_id|
-                     if id.name == span_id.name {
-                         span_id
-                     } else {
-                         id
-                     })
-    }
-}
-
 pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
@@ -151,6 +136,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             id: DUMMY_NODE_ID,
             predicates: vec![]
         },
+        span: DUMMY_SP,
     };
     let it_arg_id = token::gensym_ident("it");
     let args = vec![
@@ -180,12 +166,13 @@ where T: Ord + fmt::Debug + fmt::Display,
     let state_stack_id = token::gensym_ident("state_stack");
     let state_id = token::gensym_ident("state");
     let token_id = token::gensym_ident("token");
-    let span_id = token::gensym_ident("span");
+    let span_id = token::gensym_ident("current_span");
     let token_span_id = token::gensym_ident("token_span");
     let next_state_id = token::gensym_ident("next_state");
     let unreachable = cx.expr_unreachable(DUMMY_SP);
 
     let mut stmts = Vec::new();
+
     stmts.push(cx.stmt_item(DUMMY_SP, range_fn));
     let range_array_fn_id = token::gensym_ident("range_array");
     stmts.push(quote_stmt!(cx, fn $range_array_fn_id(x: &[Option<$span_ty>]) -> Option<$span_ty> {
@@ -230,6 +217,10 @@ where T: Ord + fmt::Debug + fmt::Display,
                 reduce_stmts.push(quote_stmt!(cx, let $span_id = $range_array_fn_id(&$span_stack_id[($span_stack_id.len() - $len)..]);).unwrap());
                 // XXX: Annoying syntax :(
                 reduce_stmts.push(quote_stmt!(cx, match $span_stack_id.len() - $len { x => $span_stack_id.truncate(x) };).unwrap());
+                // Make the current_span available to the user by exposing it through a macro
+                reduce_stmts.push(quote_stmt!(cx, macro_rules! span {
+                    () => { $span_id.unwrap() }
+                }).unwrap());
             } else {
                 reduce_stmts.push(quote_stmt!(cx, let $span_id = None;).unwrap());
             }
@@ -248,11 +239,15 @@ where T: Ord + fmt::Debug + fmt::Display,
                         init: Some(quote_expr!(cx, *$stack_id.pop().unwrap().downcast::<$ty>().unwrap())),
                         id: DUMMY_NODE_ID,
                         span: DUMMY_SP,
-                        attrs: None,
+                        attrs: ThinVec::new(),
                     });
-                    codemap::respan(DUMMY_SP, ast::StmtKind::Decl(P(codemap::respan(DUMMY_SP, ast::DeclKind::Local(local))), DUMMY_NODE_ID))
+                    ast::Stmt {
+                        id: DUMMY_NODE_ID,
+                        span: DUMMY_SP,
+                        node: ast::StmtKind::Local(local),
+                    }
                 }
-                None => cx.stmt_expr(cx.expr_method_call(DUMMY_SP,
+                None => cx.stmt_semi(cx.expr_method_call(DUMMY_SP,
                                                          cx.expr_ident(DUMMY_SP, stack_id),
                                                          cx.ident_of("pop"),
                                                          vec![])),
@@ -267,13 +262,6 @@ where T: Ord + fmt::Debug + fmt::Display,
             reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_stack_id.last().unwrap());).unwrap());
             let rspan = result.span;
 
-            // Expand the result of the RHS right now, with SPAN_ID set appropriately.
-            // This allows the RHS to use the `span!()` macro and get the value of `SPAN_ID`.
-            let result = {
-                let mut expander = cx.expander();
-                SPAN_ID.set(&span_id, move || DropSpanMarks.fold_expr(expander.fold_expr(result)))
-            };
-
             let tmp = token::gensym_ident("result");
             reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result).unwrap());
             reduce_stmts.push(quote_stmt!(cx,
@@ -281,7 +269,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             ).unwrap());
             reduce_stmts.push(quote_stmt!(cx, $span_stack_id.push($span_id);).unwrap());
 
-            let block = cx.block(rspan, reduce_stmts, None);
+            let block = cx.block(rspan, reduce_stmts);
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
             let f = cx.item_fn(span, fn_id, args, quote_ty!(cx, ()), block);
             stmts.push(cx.stmt_item(span, f));
@@ -322,7 +310,7 @@ where T: Ord + fmt::Debug + fmt::Display,
     stmts.push(cx.stmt_let(DUMMY_SP, true, state_stack_id, quote_expr!(cx, ::std::vec::Vec::new())));
     stmts.push(cx.stmt_let(DUMMY_SP, true, state_id, quote_expr!(cx, 0)));
     stmts.push(cx.stmt_let(DUMMY_SP, true, token_span_id, quote_expr!(cx, $it_arg_id.next())));
-    stmts.push(cx.stmt_expr(cx.expr_loop(DUMMY_SP, cx.block(DUMMY_SP, vec![
+    stmts.push(cx.stmt_semi(cx.expr_loop(DUMMY_SP, cx.block(DUMMY_SP, vec![
         cx.stmt_let(DUMMY_SP, false, next_state_id, cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, state_id),
             table.states.iter().enumerate().map(|(ix, state)| {
                 let mut arms = vec![];
@@ -381,8 +369,8 @@ where T: Ord + fmt::Debug + fmt::Display,
         quote_stmt!(cx, $state_stack_id.push($state_id);).unwrap(),
         quote_stmt!(cx, $token_span_id = $it_arg_id.next();).unwrap(),
         quote_stmt!(cx, $state_id = $next_state_id;).unwrap(),
-    ], None))));
-    let body = cx.block(DUMMY_SP, stmts, None);
+    ]))));
+    let body = cx.block(DUMMY_SP, stmts);
     let out_ty = cx.ty_path(cx.path_all(DUMMY_SP,
                                         true,
                                         vec![cx.ident_of("std"), cx.ident_of("result"), cx.ident_of("Result")],
@@ -396,7 +384,7 @@ where T: Ord + fmt::Debug + fmt::Display,
 pub fn expand_parser<'a>(
     cx: &'a mut base::ExtCtxt,
     sp: codemap::Span,
-    tts: &[ast::TokenTree]
+    tts: &[TokenTree]
 ) -> Box<base::MacResult + 'a> {
     parse_parser(cx, sp, tts).unwrap_or_else(|_| base::DummyResult::any(sp))
 }
@@ -404,7 +392,7 @@ pub fn expand_parser<'a>(
 fn parse_parser<'a>(
     cx: &mut base::ExtCtxt<'a>,
     sp: codemap::Span,
-    tts: &[ast::TokenTree]
+    tts: &[TokenTree]
 ) -> PResult<'a, Box<base::MacResult + 'a>> {
     #[derive(Debug)]
     enum Binding {
@@ -515,11 +503,13 @@ fn parse_parser<'a>(
                 match attr.node.value.node {
                     ast::MetaItemKind::List(ref name, ref tokens) if name == &"no_reduce" => {
                         for token in tokens.iter() {
-                            if let ast::MetaItemKind::Word(ref name) = token.node {
-                                exclusions.insert(name.to_string());
-                            } else {
-                                parser.span_err(token.span, "not the name of a token");
+                            if let ast::NestedMetaItemKind::MetaItem(ref meta_item) = token.node {
+                                if let ast::MetaItemKind::Word(ref name) = meta_item.node {
+                                    exclusions.insert(name.to_string());
+                                    continue;
+                                }
                             }
+                            parser.span_err(token.span, "not the name of a token");
                         }
                     }
                     ast::MetaItemKind::Word(ref name) if name == &"overriding" => {
@@ -570,8 +560,7 @@ fn parse_parser<'a>(
                 parser.eat(&token::Comma);
             } else {
                 // comma required
-                // `expr` may not be complete, so continue parsing until the comma or close-brace
-                try!(parser.commit_expr(&*expr, &[token::Comma], &[token::CloseDelim(token::Brace)]));
+                try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
             }
             let sp = codemap::mk_sp(lo, parser.last_span.hi);
 
@@ -624,7 +613,8 @@ fn parse_parser<'a>(
     };
     let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
-            cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), None))
+            // FIXME: requires #![allow(match_of_unit_variant_via_paren_dotdot)], which is going away
+            cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), vec![], Some(0)))
         },
         |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
@@ -642,7 +632,7 @@ fn parse_parser<'a>(
                             Terminal(x) => x.0
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
-                            cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), Some(pats.clone())))], expr),
+                            cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), pats.clone(), None))], expr),
                             quote_arm!(cx, _ => $unreachable,),
                         ]);
                         Some(cx.pat_ident(sp, id))
@@ -655,8 +645,10 @@ fn parse_parser<'a>(
             if false {
                 let rule_str = pretty_rule(*lhs, syms);
                 let rule_str = &*rule_str;
-                expr = cx.expr_block(
-                    cx.block(DUMMY_SP, vec![quote_stmt!(cx, println!("reduce by {}", $rule_str);).unwrap()], Some(expr)));
+                expr = P(quote_expr!(cx, {
+                    println!("reduce by {}", $rule_str);
+                    $expr
+                }).unwrap());
             }
 
             (expr, args, act.span)
@@ -692,20 +684,4 @@ token: {}", pretty(&state, "       "),
             }
         })).map(|mut item| { item.vis = visibility; item} );
     Ok(base::MacEager::items(SmallVector::one(r)))
-}
-
-pub fn expand_current_span<'a>(
-    cx: &'a mut base::ExtCtxt,
-    sp: codemap::Span,
-    tts: &[ast::TokenTree]
-) -> Box<base::MacResult + 'a> {
-    if tts.len() > 0 {
-        cx.span_err(sp, "extra arguments to span!()");
-    }
-    if SPAN_ID.is_set() {
-        base::MacEager::expr(cx.expr_method_call(sp, cx.expr_ident(sp, SPAN_ID.with(|&id| id)), cx.ident_of("unwrap"), vec![]))
-    } else {
-        cx.span_err(sp, "span!() called outside the scope of a reduction rule");
-        base::DummyResult::expr(sp)
-    }
 }

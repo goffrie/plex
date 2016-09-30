@@ -8,6 +8,7 @@ use redfa::Dfa;
 use redfa::regex::Regex;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
+use syntax::tokenstream::TokenTree;
 
 fn expr_u32(cx: &base::ExtCtxt, u: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitKind::Int(u as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)))
@@ -52,7 +53,7 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P
         arms.push(cx.arm(DUMMY_SP, vec![arm_pat], body));
     }
     arms.push(quote_arm!(cx, _ => state,));
-    let block = cx.block(DUMMY_SP, vec![], Some(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms)));
+    let block = cx.block_expr(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms));
     cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], u32_ty.clone(), block)
 }
 
@@ -68,11 +69,11 @@ fn first_nullable<T>(vec: &[Regex<T>]) -> Option<usize> {
     vec.iter().position(Regex::nullable)
 }
 
-pub fn expand_lexer<'cx>(cx: &'cx mut base::ExtCtxt, sp: codemap::Span, args: &[ast::TokenTree]) -> Box<base::MacResult+'cx> {
+pub fn expand_lexer<'cx>(cx: &'cx mut base::ExtCtxt, sp: codemap::Span, args: &[TokenTree]) -> Box<base::MacResult+'cx> {
     parse_lexer(cx, sp, args).unwrap_or_else(|_| base::DummyResult::any(sp))
 }
 
-fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::TokenTree]) -> PResult<'a, Box<base::MacResult+'static>>  {
+fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenTree]) -> PResult<'a, Box<base::MacResult+'static>>  {
     let mut parser = cx.new_parser_from_tts(args);
 
     // first: parse 'fn name_of_lexer(text_variable) -> ResultType;'
@@ -128,8 +129,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::T
             parser.eat(&token::Comma);
         } else {
             // comma required
-            // `expr` may not be complete, so continue parsing until the comma (or eof)
-            try!(parser.commit_expr(&*expr, &[token::Comma], &[token::Eof]));
+            try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
         }
 
         re_vec.push(re);
@@ -189,6 +189,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::T
                                None, ast::Mutability::Mutable))],
         quote_ty!(cx, Option<$ret_ty>),
         ast::Generics {
+            span: DUMMY_SP,
             lifetimes: vec![ast::LifetimeDef {
                 lifetime: text_lt,
                 bounds: Vec::new(),
@@ -200,38 +201,38 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[ast::T
             },
         },
         cx.block(DUMMY_SP,
-            helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x)).collect(),
-            Some(quote_expr!(cx, {
-                let mut state = 0;
-                let mut remaining = input.char_indices();
-                let mut last_match = None;
-                loop {
-                    if let Some(which) = $dfa_acceptance_fn(state) {
-                        last_match = Some((which, remaining.clone()));
-                    }
-                    if state == $fail_ix_lit {
-                        break;
-                    }
-                    if let Some((_, ch)) = remaining.next() {
-                        state = $dfa_transition_fn(state, ch);
-                    } else {
-                        break;
-                    }
-                }
-                if let Some((which, mut remaining)) = last_match {
-                    let ix = if let Some((ix, _)) = remaining.next() {
-                        ix
-                    } else {
-                        input.len()
-                    };
-                    let $text_pat = &input[..ix];
-                    *input = &input[ix..];
-                    Some($compute_result)
-                } else {
-                    None
-                }
-            }))
-        )
+                 helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x))
+                 .chain(Some(cx.stmt_expr(quote_expr!(cx, {
+                     let mut state = 0;
+                     let mut remaining = input.char_indices();
+                     let mut last_match = None;
+                     loop {
+                         if let Some(which) = $dfa_acceptance_fn(state) {
+                             last_match = Some((which, remaining.clone()));
+                         }
+                         if state == $fail_ix_lit {
+                             break;
+                         }
+                         if let Some((_, ch)) = remaining.next() {
+                             state = $dfa_transition_fn(state, ch);
+                         } else {
+                             break;
+                         }
+                     }
+                     if let Some((which, mut remaining)) = last_match {
+                         let ix = if let Some((ix, _)) = remaining.next() {
+                             ix
+                         } else {
+                             input.len()
+                         };
+                         let $text_pat = &input[..ix];
+                         *input = &input[ix..];
+                         Some($compute_result)
+                     } else {
+                         None
+                     }
+                 }))))
+                 .collect())
     ).map(|mut item| { item.vis = visibility; item });
     Ok(base::MacEager::items(SmallVector::one(final_fn)))
 }

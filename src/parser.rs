@@ -23,12 +23,17 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
+fn chop_string(s: &str) -> (String, char) {
+    let mut n = s.to_owned();
+    let n_len = n.len();
+    let last_char = n.as_bytes()[n_len - 1] as char;
+    n.truncate(n_len - 1);
+    (n, last_char)
+}
+
 fn chop_ident(cx: &base::ExtCtxt, ident: ast::Ident) -> (ast::Ident, char) {
-    let mut nt = (*ident.name.as_str()).to_owned();
-    let nt_len = nt.len();
-    let last_char = nt.as_bytes()[nt_len - 1] as char;
-    nt.truncate(nt_len - 1);
-    (cx.ident_of(&nt), last_char)
+    let (s, last_char) = chop_string(&*ident.name.as_str());
+    (cx.ident_of(&s), last_char)
 }
 
 #[derive(PartialEq, Eq, Copy, Clone)]
@@ -88,7 +93,7 @@ fn expected_one_of<S: fmt::Display>(xs: &[S]) -> String {
     err_msg
 }
 
-pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
+pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO, FF>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
     types: &BTreeMap<N, P<ast::Ty>>,
@@ -101,6 +106,7 @@ pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     mut to_expr: FA,
     reduce_on: FR,
     priority_of: FO,
+    format_terminal: FF,
 ) -> Result<P<ast::Item>, LR1Conflict<'a, T, N, A>>
 where T: Ord + fmt::Debug + fmt::Display,
       N: Ord + fmt::Debug,
@@ -109,6 +115,7 @@ where T: Ord + fmt::Debug + fmt::Display,
       FA: FnMut(&N, &A, &base::ExtCtxt, &[Symbol<T, N>]) -> (P<ast::Expr>, Vec<Option<P<ast::Pat>>>, codemap::Span),
       FR: FnMut(&Rhs<T, N, A>, Option<&T>) -> bool,
       FO: FnMut(&Rhs<T, N, A>, Option<&T>) -> i32,
+      FF: Fn(&T) -> String,
 {
     let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
@@ -325,7 +332,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                 let mut reduce_arms = BTreeMap::new();
                 let mut expected = vec![];
                 for (&tok, action) in state.lookahead.iter() {
-                    expected.push(format!("`{}`", tok));
+                    expected.push(format!("`{}`", format_terminal(tok)));
                     let pat = cx.pat_some(DUMMY_SP, cx.pat_tuple(DUMMY_SP, vec![to_pat(tok, cx), cx.pat_wild(DUMMY_SP)]));
                     let arm_expr = match *action {
                         LRAction::Shift(dest) => lit_u32(cx, dest as u32),
@@ -686,7 +693,10 @@ fn parse_parser<'a>(
                 None => !rhs.act.exclude_eof,
             }
         },
-        |rhs, _| rhs.act.priority
+        |rhs, _| rhs.act.priority,
+        |&ident| {
+            chop_string(&*ident.0.name.as_str()).0
+        },
     ).or_else(|conflict| {
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {

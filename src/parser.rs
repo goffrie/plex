@@ -132,7 +132,8 @@ where T: Ord + fmt::Debug + fmt::Display,
       FR: FnMut(&Rhs<T, N, A>, Option<&T>) -> bool,
       FO: FnMut(&Rhs<T, N, A>, Option<&T>) -> i32,
 {
-    let actual_start = match grammar.rules.get(&grammar.start).unwrap()[0].syms[0] {
+    let actual_start = match grammar.rules.get(&grammar.start)
+            .expect("Grammar didn't contain its start nonterminal")[0].syms[0] {
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
     };
@@ -416,7 +417,10 @@ pub fn expand_parser<'a>(
     sp: codemap::Span,
     tts: &[TokenTree]
 ) -> Box<base::MacResult + 'a> {
-    parse_parser(cx, sp, tts).unwrap_or_else(|_| base::DummyResult::any(sp))
+    parse_parser(cx, sp, tts).unwrap_or_else(|mut diagnostic| {
+        diagnostic.emit();
+        base::DummyResult::any(sp)
+    })
 }
 
 fn parse_parser<'a>(

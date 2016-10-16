@@ -23,6 +23,14 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
+fn chop_ident(cx: &base::ExtCtxt, ident: ast::Ident) -> (ast::Ident, char) {
+    let mut nt = (*ident.name.as_str()).to_owned();
+    let nt_len = nt.len();
+    let last_char = nt.as_bytes()[nt_len - 1] as char;
+    nt.truncate(nt_len - 1);
+    (cx.ident_of(&nt), last_char)
+}
+
 #[derive(PartialEq, Eq, Copy, Clone)]
 struct UnhygienicIdent(ast::Ident);
 
@@ -481,7 +489,9 @@ fn parse_parser<'a>(
     let mut start = None;
     while !parser.check(&token::Eof) {
         // parse "LHS: Type {"
-        let lhs = try!(parser.parse_ident()).name;
+        let mut lhs_str = (*try!(parser.parse_ident()).name.as_str()).to_owned();
+        lhs_str = lhs_str + "(";
+        let lhs = cx.ident_of(&lhs_str).name;
         if start.is_none() {
             start = Some(lhs);
         }
@@ -522,10 +532,11 @@ fn parse_parser<'a>(
             let (mut rule, mut binds) = (vec![], vec![]);
             while !parser.check(&token::FatArrow) {
                 let lo = parser.span.lo;
-                let name = UnhygienicIdent(try!(parser.parse_ident()));
+                let mut name = (*try!(parser.parse_ident()).name.as_str()).to_owned();
                 let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
                     let r = try!(parser.parse_pat());
                     try!(parser.expect(&token::CloseDelim(token::Bracket)));
+                    name += "(";
                     Binding::Pat(r)
                 } else if parser.eat(&token::OpenDelim(token::Paren)) {
                     let mut pats = vec![];
@@ -536,11 +547,13 @@ fn parse_parser<'a>(
                             break;
                         }
                     }
+                    name += "(";
                     Binding::Enum(codemap::mk_sp(lo, parser.last_span.hi), pats)
                 } else {
+                    name += ")";
                     Binding::None
                 };
-                rule.push(name);
+                rule.push(UnhygienicIdent(cx.ident_of(&name)));
                 binds.push(bind);
             }
             let (rule, binds) = (rule, binds);
@@ -613,8 +626,19 @@ fn parse_parser<'a>(
     };
     let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
         |&ident, cx| {
-            // FIXME: requires #![allow(match_of_unit_variant_via_paren_dotdot)], which is going away
-            cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), vec![], Some(0)))
+            let (nident, last_char) = chop_ident(cx, ident.0);
+            match last_char {
+                '(' => {
+                    cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, nident), vec![], Some(0)))
+                }
+                ')' => {
+                    cx.pat(DUMMY_SP, ast::PatKind::Ident(ast::BindingMode::ByValue(ast::Mutability::Immutable), codemap::Spanned { node: nident, span: DUMMY_SP }, None))
+                }
+                _ => {
+                    unreachable!("didn't end in ( or !; got {}", name)
+                }
+
+            }
         },
         |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
@@ -629,7 +653,10 @@ fn parse_parser<'a>(
                                 cx.span_err(sp, "can't bind enum case to a nonterminal");
                                 token::gensym_ident("error")
                             }
-                            Terminal(x) => x.0
+                            Terminal(x) => {
+                                let (ident, _) = chop_ident(cx, x.0);
+                                ident
+                            }
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
                             cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), pats.clone(), None))], expr),

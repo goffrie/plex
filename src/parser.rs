@@ -719,7 +719,7 @@ fn parse_parser<'a>(
             match conflict {
                 LR1Conflict::ReduceReduce { state, token, r1, r2 } => {
                     let mut err = parser.diagnostic().struct_span_err(
-                        sp, &*format!("reduce-reduce conflict:
+                        sp, &format!("reduce-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
             match token { Some(id) => id.to_string(),
@@ -729,12 +729,14 @@ token: {}", pretty(&state, "       "),
                     Err(err)
                 }
                 LR1Conflict::ShiftReduce { state, token, rule } => {
-                    cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
+                    let err = parser.diagnostic().struct_span_err(
+                        rule.1.act.span,
+                        &format!("shift-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
             match token { Some(id) => id.to_string(),
                           None     => "EOF".to_string() }));
-                    Err(cx.struct_span_err(rule.1.act.span, "shift-reduce"))
+                    Err(err)
                 }
             }
         })).map(|mut item| { item.vis = visibility; item} );

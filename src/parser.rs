@@ -50,6 +50,27 @@ impl fmt::Display for UnhygienicIdent {
     }
 }
 
+/// A pattern used as a terminal. This is supposed to be an enum variant.
+#[derive(PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
+struct TerminalPattern {
+    ident: UnhygienicIdent,
+    /// Whether the terminal was written as a unit-like variant `Terminal`,
+    /// as opposed to a tuple-like variant `Terminal(a1, a2)`.
+    unit_like: bool,
+}
+
+impl fmt::Debug for TerminalPattern {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.ident.fmt(f)
+    }
+}
+
+impl fmt::Display for TerminalPattern {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.ident.fmt(f)
+    }
+}
+
 fn most_frequent<T: Ord, I: Iterator<Item=T>>(it: I) -> Option<T> {
     let mut freq = BTreeMap::new();
     for x in it {
@@ -411,7 +432,7 @@ fn parse_parser<'a>(
         priority: i32,
     }
 
-    fn pretty_rule(lhs: ast::Name, syms: &[Symbol<UnhygienicIdent, ast::Name>]) -> String {
+    fn pretty_rule(lhs: ast::Name, syms: &[Symbol<TerminalPattern, ast::Name>]) -> String {
         let mut r = String::new();
         let _ = write!(&mut r, "{} ->", lhs);
         for sym in syms.iter() {
@@ -420,7 +441,7 @@ fn parse_parser<'a>(
         r
     }
     // Pretty-print an item set, for error messages.
-    fn pretty(x: &ItemSet<UnhygienicIdent, ast::Name, Action>, pad: &str) -> String {
+    fn pretty(x: &ItemSet<TerminalPattern, ast::Name, Action>, pad: &str) -> String {
         let mut r = String::new();
         let mut first = true;
         for item in x.items.iter() {
@@ -579,11 +600,25 @@ fn parse_parser<'a>(
     let mut rules: BTreeMap<ast::Name, Vec<_>> = rules.into_iter().map(|(lhs, rhss)| {
         let rhss = rhss.into_iter().map(|(rule, act)| {
             // figure out which symbols in `rule` are nonterminals vs terminals
-            let syms = rule.into_iter().map(|ident| {
+            let syms = rule.into_iter().zip(&act.binds).map(|(ident, bind)| {
                 if types.contains_key(&ident.0.name) {
                     Nonterminal(ident.0.name)
                 } else {
-                    Terminal(ident)
+                    Terminal(TerminalPattern {
+                        ident: ident,
+                        unit_like: match *bind {
+                            Binding::None => true,
+                            Binding::Enum(..) => false,
+                            Binding::Pat(..) => {
+                                // We think it's a terminal but the user wrote ident[pats...].
+                                // That syntax is only supported for nonterminals.
+                                // FIXME: This is not the right span (it points to the whole action, not just the one binding);
+                                // but Binding::Pat has no span
+                                cx.span_err(act.span, &format!("used a []-binding, but {} is not known to be a nonterminal", ident));
+                                true // dummy
+                            }
+                        },
+                    })
                 }
             }).collect();
             Rhs {
@@ -611,10 +646,17 @@ fn parse_parser<'a>(
         rules: rules,
         start: fake_start,
     };
-    let r = try!(lr1_machine(cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
-        |&ident, cx| {
-            // FIXME: requires #![allow(match_of_unit_variant_via_paren_dotdot)], which is going away
-            cx.pat(DUMMY_SP, ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), vec![], Some(0)))
+    let r = try!(lr1_machine(
+        cx, &grammar, &types, token_ty, span_ty, range_fn_id, range_fn, name,
+        |&TerminalPattern { ident, unit_like }, cx| {
+            cx.pat(DUMMY_SP,
+            if unit_like {
+                // `ident`
+                ast::PatKind::Path(None, cx.path_ident(DUMMY_SP, ident.0))
+            } else {
+                // `ident(..)`
+                ast::PatKind::TupleStruct(cx.path_ident(DUMMY_SP, ident.0), vec![], Some(0))
+            })
         },
         |lhs, act, cx, syms| {
             let mut expr = act.expr.clone();
@@ -629,7 +671,7 @@ fn parse_parser<'a>(
                                 cx.span_err(sp, "can't bind enum case to a nonterminal");
                                 token::gensym_ident("error")
                             }
-                            Terminal(x) => x.0
+                            Terminal(x) => x.ident.0
                         };
                         expr = cx.expr_match(act.span, cx.expr_ident(sp, id), vec![
                             cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), pats.clone(), None))], expr),
@@ -655,7 +697,7 @@ fn parse_parser<'a>(
         },
         |rhs, token| {
             match token {
-                Some(id) => !rhs.act.exclusions.contains(&id.0.name.to_string()),
+                Some(id) => !rhs.act.exclusions.contains(&id.to_string()),
                 None => !rhs.act.exclude_eof,
             }
         },
@@ -667,7 +709,7 @@ fn parse_parser<'a>(
                         sp, &*format!("reduce-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
-            match token { Some(id) => id.0.name.to_string(),
+            match token { Some(id) => id.to_string(),
                           None     => "EOF".to_string() }));
                     err.span_note(r1.1.act.span, "conflicting rule");
                     err.span_note(r2.1.act.span, "conflicting rule");
@@ -677,7 +719,7 @@ token: {}", pretty(&state, "       "),
                     cx.span_err(rule.1.act.span, &*format!("shift-reduce conflict:
 state: {}
 token: {}", pretty(&state, "       "),
-            match token { Some(id) => id.0.name.to_string(),
+            match token { Some(id) => id.to_string(),
                           None     => "EOF".to_string() }));
                     Err(cx.struct_span_err(rule.1.act.span, "shift-reduce"))
                 }

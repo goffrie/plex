@@ -136,9 +136,12 @@ implied to be `statements`.)
         }
 ```
 
-Write the rule, an arrow `=>`, and the code to handle this rule. Square
-brackets assign a pattern to the result of a nonterminal. The expression must
-evaluate to the type of the left-hand side: in this case, `Vec<Expr>`.
+Write the rule's right-hand side, an arrow `=>`, and the code to handle this
+rule. The right-hand side is a sequence of nonterminals or terminals to match.
+Here, `statements` and `expr` are nonterminals. Square brackets assign a pattern
+to the result of a nonterminal, allowing us to use the data returned by that
+nonterminal. Terminals must be enum variants brought in scope. The expression
+must evaluate to the type of the left-hand side: in this case, `Vec<Expr>`.
 
 ```rust
         => vec![],
@@ -147,7 +150,8 @@ evaluate to the type of the left-hand side: in this case, `Vec<Expr>`.
 
 Empty rules are allowed: just don't write anything before the arrow.
 
-You can also destructure tokens using round brackets:
+If a terminal (i.e. a token) is a tuple-like enum variant, and so holds data,
+you should destructure it using round brackets:
 
 ```
     expr: Expr {
@@ -158,7 +162,7 @@ You can also destructure tokens using round brackets:
 
 Inside a rule, the `span!()` macro evaluates to the span of the current
 right-hand-side. However, this only works if at least one token was matched. If
-the rule matched an empty sequence, `span!()` will fail, so avoid using it in
+the rule matched an empty sequence, `span!()` will panic, so avoid using it in
 nullable rules.
 
 The return type of this parser is

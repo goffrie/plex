@@ -493,22 +493,28 @@ fn parse_parser<'a>(
     try!(parser.expect(&token::Semi));
 
     let range_fn_id = token::gensym_ident("range");
-    let range_fn = {
-        let lo = parser.span.lo;
-        try!(parser.expect(&token::OpenDelim(token::Paren)));
-        let p1_sp = parser.span;
-        let p1 = try!(parser.parse_ident());
-        try!(parser.expect(&token::Comma));
-        let p2_sp = parser.span;
-        let p2 = try!(parser.parse_ident());
-        try!(parser.expect(&token::CloseDelim(token::Paren)));
-        let body = try!(parser.parse_block());
-        let hi = parser.last_span.hi;
-        cx.item_fn(codemap::mk_sp(lo, hi), range_fn_id, vec![
-            cx.arg(p1_sp, p1, span_ty.clone()),
-            cx.arg(p2_sp, p2, span_ty.clone()),
-        ], span_ty.clone(), body)
-    };
+    let range_fn =
+        if !parser.check(&token::OpenDelim(token::Paren)) && span_ty.node == ast::TyKind::Tup(vec![]) {
+            cx.item_fn(DUMMY_SP, range_fn_id, vec![
+                cx.arg(DUMMY_SP, token::gensym_ident("_a"), span_ty.clone()),
+                cx.arg(DUMMY_SP, token::gensym_ident("_b"), span_ty.clone()),
+            ], span_ty.clone(), cx.block_expr(cx.expr_tuple(DUMMY_SP, vec![])))
+        } else {
+            let lo = parser.span.lo;
+            try!(parser.expect(&token::OpenDelim(token::Paren)));
+            let p1_sp = parser.span;
+            let p1 = try!(parser.parse_ident());
+            try!(parser.expect(&token::Comma));
+            let p2_sp = parser.span;
+            let p2 = try!(parser.parse_ident());
+            try!(parser.expect(&token::CloseDelim(token::Paren)));
+            let body = try!(parser.parse_block());
+            let hi = parser.last_span.hi;
+            cx.item_fn(codemap::mk_sp(lo, hi), range_fn_id, vec![
+                cx.arg(p1_sp, p1, span_ty.clone()),
+                cx.arg(p2_sp, p2, span_ty.clone()),
+            ], span_ty.clone(), body)
+        };
 
     let mut rules = BTreeMap::new();
     let mut types = BTreeMap::new();

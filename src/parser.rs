@@ -117,7 +117,7 @@ where T: Ord + fmt::Debug + fmt::Display,
     let generics = ast::Generics {
         lifetimes: vec![],
         ty_params: ptr::P::from_vec(vec![
-            cx.typaram(DUMMY_SP, it_ty_id, ptr::P::from_vec(vec![
+            cx.typaram(DUMMY_SP, it_ty_id, vec![], ptr::P::from_vec(vec![
                 cx.typarambound(cx.path_all(DUMMY_SP, true, vec![
                     cx.ident_of("std"),
                     cx.ident_of("iter"),
@@ -263,7 +263,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             let rspan = result.span;
 
             let tmp = token::gensym_ident("result");
-            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result).unwrap());
+            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
             ).unwrap());

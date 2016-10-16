@@ -1,4 +1,5 @@
 use syntax::ptr::P;
+use syntax::util::ThinVec;
 use syntax::util::small_vector::SmallVector;
 use syntax::{codemap, ast, ptr};
 use syntax::parse::{self, parser, token, classify, PResult};
@@ -191,6 +192,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         ast::Generics {
             span: DUMMY_SP,
             lifetimes: vec![ast::LifetimeDef {
+                attrs: ThinVec::new(),
                 lifetime: text_lt,
                 bounds: Vec::new(),
             }],

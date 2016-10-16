@@ -23,7 +23,7 @@ fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(Copy, Clone)]
 struct UnhygienicIdent(ast::Ident);
 
 impl PartialOrd for UnhygienicIdent {
@@ -36,6 +36,15 @@ impl Ord for UnhygienicIdent {
     fn cmp(&self, other: &UnhygienicIdent) -> cmp::Ordering {
         self.0.name.cmp(&other.0.name)
     }
+}
+
+impl PartialEq for UnhygienicIdent {
+    fn eq(&self, other: &UnhygienicIdent) -> bool {
+        self.0.name.eq(&other.0.name)
+    }
+}
+
+impl Eq for UnhygienicIdent {
 }
 
 impl fmt::Debug for UnhygienicIdent {

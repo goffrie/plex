@@ -103,7 +103,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
     while parser.token != token::Eof {
         // parse '"regex" =>'
         let re_str = try!(parse_str_interior(&mut parser));
-        let sp = parser.last_span;
+        let sp = parser.prev_span;
         let re = match re_str.parse() {
             Ok(r) => r,
             Err(e) => {

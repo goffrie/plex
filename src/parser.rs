@@ -509,7 +509,7 @@ fn parse_parser<'a>(
             let p2 = try!(parser.parse_ident());
             try!(parser.expect(&token::CloseDelim(token::Paren)));
             let body = try!(parser.parse_block());
-            let hi = parser.last_span.hi;
+            let hi = parser.prev_span.hi;
             cx.item_fn(codemap::mk_sp(lo, hi), range_fn_id, vec![
                 cx.arg(p1_sp, p1, span_ty.clone()),
                 cx.arg(p2_sp, p2, span_ty.clone()),
@@ -526,7 +526,7 @@ fn parse_parser<'a>(
             start = Some(lhs);
         }
         if rules.contains_key(&lhs) {
-            let sp = parser.last_span;
+            let sp = parser.prev_span;
             parser.span_err(sp, "duplicate nonterminal");
         }
         try!(parser.expect(&token::Colon));
@@ -576,7 +576,7 @@ fn parse_parser<'a>(
                             break;
                         }
                     }
-                    Binding::Enum(codemap::mk_sp(lo, parser.last_span.hi), pats)
+                    Binding::Enum(codemap::mk_sp(lo, parser.prev_span.hi), pats)
                 } else {
                     Binding::None
                 };
@@ -602,7 +602,7 @@ fn parse_parser<'a>(
                 // comma required
                 try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
             }
-            let sp = codemap::mk_sp(lo, parser.last_span.hi);
+            let sp = codemap::mk_sp(lo, parser.prev_span.hi);
 
             rhss.push((rule, Action {
                 binds: binds,

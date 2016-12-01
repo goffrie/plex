@@ -2,7 +2,10 @@ use syntax::ptr::P;
 use syntax::util::ThinVec;
 use syntax::util::small_vector::SmallVector;
 use syntax::{codemap, ast, ptr};
-use syntax::parse::{self, parser, token, classify, PResult};
+use syntax::ast::Ident;
+use syntax::parse::{self, parser, classify, PResult};
+use syntax::parse::token;
+use syntax::symbol::{keywords, Symbol};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use redfa::Dfa;
@@ -18,8 +21,8 @@ fn expr_u32(cx: &base::ExtCtxt, u: u32) -> P<ast::Expr> {
 pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P<ast::Item> {
     let u32_ty = quote_ty!(cx, u32);
     let char_ty = quote_ty!(cx, char);
-    let state_arg = cx.arg(DUMMY_SP, token::str_to_ident("state"), u32_ty.clone());
-    let char_arg = cx.arg(DUMMY_SP, token::str_to_ident("ch"), char_ty.clone());
+    let state_arg = cx.arg(DUMMY_SP, Ident::from_str("state"), u32_ty.clone());
+    let char_arg = cx.arg(DUMMY_SP, Ident::from_str("ch"), char_ty.clone());
     let mut arms = Vec::with_capacity(dfa.states.len());
     for (i, tr) in dfa.states.iter().enumerate() {
         let arm_pat = cx.pat_lit(DUMMY_SP, expr_u32(cx, i as u32));
@@ -61,8 +64,8 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P
 fn parse_str_interior<'a>(parser: &mut parser::Parser<'a>) -> PResult<'a, String> {
     let (re_str, style) = try!(parser.parse_str());
     Ok(match style {
-        ast::StrStyle::Cooked => parse::str_lit(&re_str),
-        ast::StrStyle::Raw(_) => parse::raw_str_lit(&re_str),
+        ast::StrStyle::Cooked => parse::str_lit(&re_str.as_str()),
+        ast::StrStyle::Raw(_) => parse::raw_str_lit(&re_str.as_str()),
     })
 }
 
@@ -78,19 +81,19 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
     let mut parser = cx.new_parser_from_tts(args);
 
     // first: parse 'fn name_of_lexer(text_variable) -> ResultType;'
-    let visibility = if parser.eat_keyword(token::keywords::Pub) {
+    let visibility = if parser.eat_keyword(keywords::Pub) {
         ast::Visibility::Public
     } else {
         ast::Visibility::Inherited
     };
-    try!(parser.expect_keyword(token::keywords::Fn));
+    try!(parser.expect_keyword(keywords::Fn));
     let fn_name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
     let text_pat = try!(parser.parse_pat());
     let text_lt = if parser.eat(&token::Colon) {
         try!(parser.parse_lifetime())
     } else {
-        cx.lifetime(DUMMY_SP, token::gensym("text"))
+        cx.lifetime(DUMMY_SP, Symbol::gensym("text"))
     };
     try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::RArrow));
@@ -148,10 +151,10 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         }
     };
 
-    let dfa_transition_fn = token::str_to_ident(&*format!("transition"));
-    let dfa_acceptance_fn = token::str_to_ident(&*format!("accepting"));
+    let dfa_transition_fn = Ident::from_str(&*format!("transition"));
+    let dfa_acceptance_fn = Ident::from_str(&*format!("accepting"));
 
-    let input = token::str_to_ident("input");
+    let input = Ident::from_str("input");
     let fail_ix_lit = cx.expr_lit(DUMMY_SP, ast::LitKind::Int(fail_ix as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)));
 
     let mut helpers = Vec::new();
@@ -185,7 +188,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         vec![cx.arg(DUMMY_SP, input,
                     cx.ty_rptr(DUMMY_SP,
                                cx.ty_rptr(DUMMY_SP,
-                                          cx.ty_ident(DUMMY_SP, token::str_to_ident("str")),
+                                          cx.ty_ident(DUMMY_SP, Ident::from_str("str")),
                                           Some(text_lt), ast::Mutability::Immutable),
                                None, ast::Mutability::Mutable))],
         quote_ty!(cx, Option<$ret_ty>),

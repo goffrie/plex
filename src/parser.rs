@@ -5,7 +5,10 @@ use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
 use syntax::util::ThinVec;
 use syntax::{ast, ptr, codemap};
-use syntax::parse::{parser, token, classify, PResult};
+use syntax::ast::Ident;
+use syntax::parse::{parser, classify, PResult};
+use syntax::parse::token;
+use syntax::symbol::{self, keywords};
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use lalr::*;
@@ -21,6 +24,9 @@ fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
 }
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
+}
+fn gensym(s: &str) -> ast::Ident {
+    Ident::with_empty_ctxt(symbol::Symbol::gensym(s))
 }
 
 #[derive(Copy, Clone)]
@@ -138,7 +144,7 @@ where T: Ord + fmt::Debug + fmt::Display,
         Nonterminal(ref x) => x,
     };
     let table: LR1ParseTable<T, N, A> = try!(grammar.lalr1(reduce_on, priority_of));
-    let it_ty_id = token::gensym_ident("I");
+    let it_ty_id = gensym("I");
     let it_ty = cx.ty_ident(DUMMY_SP, it_ty_id);
     let u32_ty = quote_ty!(cx, u32);
     let token_span_ty = cx.ty(DUMMY_SP, ast::TyKind::Tup(vec![
@@ -169,7 +175,7 @@ where T: Ord + fmt::Debug + fmt::Display,
         },
         span: DUMMY_SP,
     };
-    let it_arg_id = token::gensym_ident("it");
+    let it_arg_id = gensym("it");
     let args = vec![
         ast::Arg {
             ty: it_ty,
@@ -185,27 +191,27 @@ where T: Ord + fmt::Debug + fmt::Display,
             rhss.iter().map(|rhs| rhs as *const _)
         })
         .enumerate()
-        .map(|(i, k)| (k, token::gensym_ident(&format!("reduce_{}", i))))
+        .map(|(i, k)| (k, gensym(&format!("reduce_{}", i))))
         .collect();
     let goto_fn_ids: BTreeMap<_, _> = grammar.rules.keys()
         .filter(|&lhs| *lhs != grammar.start)
         .enumerate()
-        .map(|(i, lhs)| (lhs, token::gensym_ident(&format!("goto_{}", i))))
+        .map(|(i, lhs)| (lhs, gensym(&format!("goto_{}", i))))
         .collect();
-    let stack_id = token::gensym_ident("stack");
-    let span_stack_id = token::gensym_ident("span_stack");
-    let state_stack_id = token::gensym_ident("state_stack");
-    let state_id = token::gensym_ident("state");
-    let token_id = token::gensym_ident("token");
-    let span_id = token::gensym_ident("current_span");
-    let token_span_id = token::gensym_ident("token_span");
-    let next_state_id = token::gensym_ident("next_state");
+    let stack_id = gensym("stack");
+    let span_stack_id = gensym("span_stack");
+    let state_stack_id = gensym("state_stack");
+    let state_id = gensym("state");
+    let token_id = gensym("token");
+    let span_id = gensym("current_span");
+    let token_span_id = gensym("token_span");
+    let next_state_id = gensym("next_state");
     let unreachable = cx.expr_unreachable(DUMMY_SP);
 
     let mut stmts = Vec::new();
 
     stmts.push(cx.stmt_item(DUMMY_SP, range_fn));
-    let range_array_fn_id = token::gensym_ident("range_array");
+    let range_array_fn_id = gensym("range_array");
     stmts.push(quote_stmt!(cx, fn $range_array_fn_id(x: &[Option<$span_ty>]) -> Option<$span_ty> {
         if let Some(lo) = x.iter().filter_map(|&x| x).next() {
             let hi = x.iter().rev().filter_map(|&x| x).next().unwrap();
@@ -293,7 +299,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             reduce_stmts.push(quote_stmt!(cx, *$state_id = $goto_fn(*$state_stack_id.last().unwrap());).unwrap());
             let rspan = result.span;
 
-            let tmp = token::gensym_ident("result");
+            let tmp = gensym("result");
             reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
@@ -383,7 +389,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                         continue
                     })));
                 }
-                let err_msg_lit = cx.expr_str(DUMMY_SP, token::intern_and_get_ident(&*expected_one_of(&*expected)));
+                let err_msg_lit = cx.expr_str(DUMMY_SP, symbol::Symbol::intern(&*expected_one_of(&*expected)));
                 arms.push(quote_arm!(cx, _ => return Err(($token_span_id, $err_msg_lit)),));
                 cx.arm(DUMMY_SP,
                     vec![pat_u32(cx, ix as u32)],
@@ -478,12 +484,12 @@ fn parse_parser<'a>(
     let mut parser = cx.new_parser_from_tts(tts);
 
     // parse 'fn name_of_parser(Token, Span);'
-    let visibility = if parser.eat_keyword(token::keywords::Pub) {
+    let visibility = if parser.eat_keyword(keywords::Pub) {
         ast::Visibility::Public
     } else {
         ast::Visibility::Inherited
     };
-    try!(parser.expect_keyword(token::keywords::Fn));
+    try!(parser.expect_keyword(keywords::Fn));
     let name = try!(parser.parse_ident());
     try!(parser.expect(&token::OpenDelim(token::Paren)));
     let token_ty = try!(parser.parse_ty());
@@ -492,12 +498,12 @@ fn parse_parser<'a>(
     try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::Semi));
 
-    let range_fn_id = token::gensym_ident("range");
+    let range_fn_id = gensym("range");
     let range_fn =
         if !parser.check(&token::OpenDelim(token::Paren)) && span_ty.node == ast::TyKind::Tup(vec![]) {
             cx.item_fn(DUMMY_SP, range_fn_id, vec![
-                cx.arg(DUMMY_SP, token::gensym_ident("_a"), span_ty.clone()),
-                cx.arg(DUMMY_SP, token::gensym_ident("_b"), span_ty.clone()),
+                cx.arg(DUMMY_SP, gensym("_a"), span_ty.clone()),
+                cx.arg(DUMMY_SP, gensym("_b"), span_ty.clone()),
             ], span_ty.clone(), cx.block_expr(cx.expr_tuple(DUMMY_SP, vec![])))
         } else {
             let lo = parser.span.lo;
@@ -540,19 +546,19 @@ fn parse_parser<'a>(
             while parser.check(&token::Pound) {
                 // attributes
                 let attr = try!(parser.parse_attribute(false)); // don't allow "#![..]" syntax
-                match attr.node.value.node {
-                    ast::MetaItemKind::List(ref name, ref tokens) if name == &"no_reduce" => {
+                match attr.value.node {
+                    ast::MetaItemKind::List(ref tokens) if attr.value.name == "no_reduce" => {
                         for token in tokens.iter() {
                             if let ast::NestedMetaItemKind::MetaItem(ref meta_item) = token.node {
-                                if let ast::MetaItemKind::Word(ref name) = meta_item.node {
-                                    exclusions.insert(name.to_string());
+                                if let ast::MetaItemKind::Word = meta_item.node {
+                                    exclusions.insert(meta_item.name.to_string());
                                     continue;
                                 }
                             }
                             parser.span_err(token.span, "not the name of a token");
                         }
                     }
-                    ast::MetaItemKind::Word(ref name) if name == &"overriding" => {
+                    ast::MetaItemKind::Word if attr.value.name == "overriding" => {
                         priority = 1;
                     }
                     _ => parser.span_err(attr.span, "unknown attribute"),
@@ -648,7 +654,7 @@ fn parse_parser<'a>(
         (lhs, rhss)
     }).collect();
     let start = start.expect("need at least one nonterminal");
-    let fake_start = token::gensym("start");
+    let fake_start = symbol::Symbol::gensym("start");
     let unreachable = cx.expr_unreachable(DUMMY_SP);
     rules.insert(fake_start, vec![Rhs {
         syms: vec![Nonterminal(start)],
@@ -684,11 +690,11 @@ fn parse_parser<'a>(
                 args.push(match *x {
                     Binding::Pat(ref y) => Some(y.clone()),
                     Binding::Enum(sp, ref pats) => {
-                        let id = token::gensym_ident(&*format!("s{}", i));
+                        let id = gensym(&*format!("s{}", i));
                         let terminal = match *sym {
                             Nonterminal(..) => {
                                 cx.span_err(sp, "can't bind enum case to a nonterminal");
-                                token::gensym_ident("error")
+                                gensym("error")
                             }
                             Terminal(x) => x.ident.0
                         };

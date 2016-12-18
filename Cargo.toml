@@ -20,4 +20,4 @@ crate-type = ["dylib"]
 [dependencies]
 
 lalr = "0.0.1"
-redfa = "0.0.1"
+redfa = "0.0.2"

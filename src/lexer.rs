@@ -13,19 +13,14 @@ use redfa::regex::Regex;
 use syntax::codemap::DUMMY_SP;
 use syntax::ast::DUMMY_NODE_ID;
 use syntax::tokenstream::TokenTree;
+use std::collections::{BTreeSet, VecDeque};
 
-fn expr_u32(cx: &base::ExtCtxt, u: u32) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(u as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)))
-}
-
-pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P<ast::Item> {
-    let u32_ty = quote_ty!(cx, u32);
+pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, state_paths: &[ast::Path], ident: ast::Ident) -> P<ast::Item> {
     let char_ty = quote_ty!(cx, char);
-    let state_arg = cx.arg(DUMMY_SP, Ident::from_str("state"), u32_ty.clone());
+    let state_arg = cx.arg(DUMMY_SP, Ident::from_str("state"), cx.ty_ident(DUMMY_SP, state_enum));
     let char_arg = cx.arg(DUMMY_SP, Ident::from_str("ch"), char_ty.clone());
     let mut arms = Vec::with_capacity(dfa.states.len());
-    for (i, tr) in dfa.states.iter().enumerate() {
-        let arm_pat = cx.pat_lit(DUMMY_SP, expr_u32(cx, i as u32));
+    for (tr, state_name) in dfa.states.iter().zip(state_paths) {
         let mut subarms = Vec::new();
         let mut iter = tr.by_char.iter().peekable();
         while let Some((&ch, &target)) = iter.next() {
@@ -49,16 +44,15 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, ident: ast::Ident) -> P
                 attrs: Vec::new(),
                 pats: vec![pat],
                 guard: None,
-                body: expr_u32(cx, target as u32),
+                body: cx.expr_path(state_paths[target as usize].clone()),
             });
         }
-        subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], expr_u32(cx, tr.default as u32)));
+        subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], cx.expr_path(state_paths[tr.default as usize].clone())));
         let body = cx.expr_match(DUMMY_SP, quote_expr!(cx, ch), subarms);
-        arms.push(cx.arm(DUMMY_SP, vec![arm_pat], body));
+        arms.push(quote_arm!(cx, $state_name => $body,));
     }
-    arms.push(quote_arm!(cx, _ => state,));
     let block = cx.block_expr(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms));
-    cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], u32_ty.clone(), block)
+    cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], cx.ty_ident(DUMMY_SP, state_enum), block)
 }
 
 fn parse_str_interior<'a>(parser: &mut parser::Parser<'a>) -> PResult<'a, String> {
@@ -75,6 +69,33 @@ fn first_nullable<T>(vec: &[Regex<T>]) -> Option<usize> {
 
 pub fn expand_lexer<'cx>(cx: &'cx mut base::ExtCtxt, sp: codemap::Span, args: &[TokenTree]) -> Box<base::MacResult+'cx> {
     parse_lexer(cx, sp, args).unwrap_or_else(|_| base::DummyResult::any(sp))
+}
+
+fn dfa_make_names<V>(dfa: &Dfa<char, V>) -> Vec<String> {
+    let mut names = vec![String::new(); dfa.states.len()];
+    let mut seen = BTreeSet::new();
+    seen.insert(0);
+    let mut worklist = VecDeque::new();
+    worklist.push_back((0, "S_".into()));
+    while let Some((i, name)) = worklist.pop_front() {
+        for (&c, &next) in &dfa.states[i as usize].by_char {
+            if seen.insert(next) {
+                let new_name = if c.is_alphanumeric() {
+                    format!("{}{}", name, c)
+                } else {
+                    format!("{}_{:x}_", name, c as u32)
+                };
+                worklist.push_back((next, new_name));
+            }
+        }
+        let default = dfa.states[i as usize].default;
+        if seen.insert(default) {
+            let new_name = format!("{}__", name);
+            worklist.push_back((default, new_name));
+        }
+        names[i as usize] = name;
+    }
+    names
 }
 
 fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenTree]) -> PResult<'a, Box<base::MacResult+'static>>  {
@@ -140,35 +161,39 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         actions.push(expr);
     }
 
-    let (dfa, map) = Dfa::from_derivatives(vec![re_vec]);
-    let dfa = dfa.map(|vec| first_nullable(&vec));
-    let fail_ix = match map.get(&vec![Regex::Null; actions.len()]) {
-        Some(&ix) => ix,
-        None => {
-            // XXX
-            cx.span_warn(sp, "some rule (?) has .* as a prefix");
-            dfa.states.len() as u32
-        }
-    };
+    let (dfa, _) = Dfa::from_derivatives(vec![re_vec]);
+    let dfa = dfa.map(|vec| first_nullable(&vec)).minimize().map(|&x| x);
+    let error_state_ix = dfa.states.iter().enumerate()
+        .position(|(ix, state)| state.value.is_none() && state.by_char.is_empty() && state.default as usize == ix);
+    if error_state_ix.is_none() {
+        cx.span_warn(sp, "this DFA has no error state; it will always scan the entire input");
+    }
+    let mut names: Vec<_> = dfa_make_names(&dfa).into_iter().map(|x| Ident::from_str(&x)).collect();
+    if let Some(ix) = error_state_ix {
+        names[ix] = Ident::from_str("Error");
+    }
+    let state_enum = Ident::from_str("State");
+    let state_paths: Vec<_> = names.iter().map(|name| cx.path(DUMMY_SP, vec![state_enum, *name])).collect();
+    let initial_state = &state_paths[0];
+    let error_state = error_state_ix.map(|ix| &state_paths[ix]);
 
     let dfa_transition_fn = Ident::from_str(&*format!("transition"));
     let dfa_acceptance_fn = Ident::from_str(&*format!("accepting"));
 
     let input = Ident::from_str("input");
-    let fail_ix_lit = cx.expr_lit(DUMMY_SP, ast::LitKind::Int(fail_ix as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)));
 
     let mut helpers = Vec::new();
-    helpers.push(dfa_fn(cx, &dfa, dfa_transition_fn));
+    helpers.push(dfa_fn(cx, &dfa, state_enum, &state_paths, dfa_transition_fn));
     helpers.push({
         let mut arms: Vec<_> = dfa.states.iter()
             .map(|state| state.value)
-            .enumerate().filter_map(|(ix, maybe_act)| maybe_act.map(|act| {
-                let ix = ix as u32;
+            .zip(&state_paths)
+            .filter_map(|(maybe_act, state)| maybe_act.map(|act| {
                 let act = act as u32;
-                quote_arm!(cx, $ix => Some($act),)
+                quote_arm!(cx, $state => Some($act),)
             })).collect();
         arms.push(quote_arm!(cx, _ => None,));
-        quote_item!(cx, fn $dfa_acceptance_fn(state: u32) -> Option<u32> {
+        quote_item!(cx, fn $dfa_acceptance_fn(state: $state_enum) -> Option<u32> {
             match state {
                 $arms
             }
@@ -183,6 +208,10 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         $compute_arms
         _ => unreachable!(),
     });
+    let break_on_error = error_state.map(|state| quote_stmt!(cx,
+                                                             if let $state = state {
+                                                                 break;
+                                                             }).unwrap());
     let final_fn = cx.item_fn_poly(DUMMY_SP,
         fn_name,
         vec![cx.arg(DUMMY_SP, input,
@@ -206,18 +235,22 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
             },
         },
         cx.block(DUMMY_SP,
-                 helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x))
+                 Some(cx.stmt_item(DUMMY_SP, cx.item(DUMMY_SP, state_enum, vec![
+                     quote_attr!(cx, #[derive(Copy, Clone)]),
+                     quote_attr!(cx, #[allow(non_camel_case_types)]),
+                 ], ast::ItemKind::Enum(ast::EnumDef {
+                     variants: names.iter().map(|&name| cx.variant(DUMMY_SP, name, vec![])).collect()
+                 }, ast::Generics::default())))).into_iter()
+                 .chain(helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x)))
                  .chain(Some(cx.stmt_expr(quote_expr!(cx, {
-                     let mut state = 0;
+                     let mut state = $initial_state;
                      let mut remaining = input.char_indices();
                      let mut last_match = None;
                      loop {
                          if let Some(which) = $dfa_acceptance_fn(state) {
                              last_match = Some((which, remaining.clone()));
                          }
-                         if state == $fail_ix_lit {
-                             break;
-                         }
+                         $break_on_error
                          if let Some((_, ch)) = remaining.next() {
                              state = $dfa_transition_fn(state, ch);
                          } else {

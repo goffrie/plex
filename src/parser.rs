@@ -377,7 +377,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                         LRAction::Accept => {
                             let ty = types.get(actual_start).unwrap();
                             let arm_expr = quote_expr!(cx,
-                                return Ok(*$stack_id.pop().unwrap().downcast::<$ty>().unwrap()));
+                                return ::std::result::Result::Ok(*$stack_id.pop().unwrap().downcast::<$ty>().unwrap()));
                             arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
                         }
                     };
@@ -390,7 +390,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                     })));
                 }
                 let err_msg_lit = cx.expr_str(DUMMY_SP, symbol::Symbol::intern(&*expected_one_of(&*expected)));
-                arms.push(quote_arm!(cx, _ => return Err(($token_span_id, $err_msg_lit)),));
+                arms.push(quote_arm!(cx, _ => return ::std::result::Result::Err(($token_span_id, $err_msg_lit)),));
                 cx.arm(DUMMY_SP,
                     vec![pat_u32(cx, ix as u32)],
                     cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, token_span_id),
@@ -399,7 +399,7 @@ where T: Ord + fmt::Debug + fmt::Display,
         quote_stmt!(cx, match $token_span_id {
             Some(($token_id, $span_id)) => {
                 $stack_id.push(Box::new($token_id) as Box<::std::any::Any>);
-                $span_stack_id.push(Some($span_id));
+                $span_stack_id.push(::std::option::Option::Some($span_id));
             }
             None => $unreachable,
         };).unwrap(),
@@ -413,7 +413,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                                         vec![cx.ident_of("std"), cx.ident_of("result"), cx.ident_of("Result")],
                                         vec![],
                                         vec![types.get(actual_start).unwrap().clone(),
-                                             quote_ty!(cx, (Option<$token_span_ty>, &'static str))],
+                                             quote_ty!(cx, (::std::option::Option<$token_span_ty>, &'static str))],
                                         vec![]));
     Ok(cx.item_fn_poly(DUMMY_SP, name, args, out_ty, generics, body))
 }

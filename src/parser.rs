@@ -116,6 +116,14 @@ fn expected_one_of<S: fmt::Display>(xs: &[S]) -> String {
     err_msg
 }
 
+fn rule_name<T, N, A>(lhs: &N, rhs: &Rhs<T, N, A>) -> String where T: Display, N: Display {
+    let mut s = format!("{}_", lhs);
+    for symbol in &rhs.syms {
+        write!(&mut s, "_{}", symbol).unwrap();
+    }
+    s
+}
+
 pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     cx: &mut base::ExtCtxt,
     grammar: &'a Grammar<T, N, A>,
@@ -184,14 +192,15 @@ where T: Ord + fmt::Debug + fmt::Display,
             id: DUMMY_NODE_ID,
         }
     ];
-    let rule_fn_ids: BTreeMap<_, _> = grammar.rules.iter()
-        .filter(|&(lhs, _)| *lhs != grammar.start)
-        .flat_map(|(_, rhss)| {
-            // Identify rules by their RHS, which should have unique addresses
-            rhss.iter().map(|rhs| rhs as *const _)
+    let rule_fn_ids: Vec<Vec<_>> = grammar.rules.iter()
+        .map(|(lhs, rhss)| {
+            if *lhs == grammar.start {
+                return vec![];
+            }
+            rhss.iter()
+                .map(|rhs| gensym(&format!("reduce_{}", rule_name(lhs, rhs))))
+                .collect()
         })
-        .enumerate()
-        .map(|(i, k)| (k, gensym(&format!("reduce_{}", i))))
         .collect();
     let goto_fn_ids: BTreeMap<_, _> = grammar.rules.keys()
         .filter(|&lhs| *lhs != grammar.start)
@@ -223,13 +232,13 @@ where T: Ord + fmt::Debug + fmt::Display,
     let stack_ty = quote_ty!(cx, Vec<Box<::std::any::Any> >);
     let span_stack_ty = quote_ty!(cx, Vec<Option<$span_ty> >);
     let state_stack_ty = quote_ty!(cx, Vec<u32>);
-    for (lhs, rhss) in grammar.rules.iter() {
+    for ((lhs, rhss), sub_rule_fn_ids) in grammar.rules.iter().zip(&rule_fn_ids) {
         if *lhs == grammar.start {
             continue;
         }
         let goto_fn = *goto_fn_ids.get(lhs).unwrap();
         let lhs_ty = types.get(lhs).unwrap();
-        for rhs in rhss.iter() {
+        for (rhs, rule_fn_id) in rhss.iter().zip(sub_rule_fn_ids) {
             let (result, arg_pats, span) = to_expr(lhs, &rhs.act, cx, &rhs.syms);
             let args = vec![ast::Arg {
                 ty: cx.ty_rptr(DUMMY_SP, stack_ty.clone(), None, ast::Mutability::Mutable),
@@ -253,7 +262,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             if rhs.syms.len() > 0 {
                 reduce_stmts.push(quote_stmt!(cx, let $span_id = $range_array_fn_id(&$span_stack_id[($span_stack_id.len() - $len)..]);).unwrap());
                 // XXX: Annoying syntax :(
-                reduce_stmts.push(quote_stmt!(cx, match $span_stack_id.len() - $len { x => $span_stack_id.truncate(x) };).unwrap());
+                reduce_stmts.push(quote_stmt!(cx, { let x = $span_stack_id.len() - $len; $span_stack_id.truncate(x); };).unwrap());
                 // Make the current_span available to the user by exposing it through a macro
                 reduce_stmts.push(quote_stmt!(cx, macro_rules! span {
                     () => { $span_id.unwrap() }
@@ -307,8 +316,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             reduce_stmts.push(quote_stmt!(cx, $span_stack_id.push($span_id);).unwrap());
 
             let block = cx.block(rspan, reduce_stmts);
-            let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
-            let f = cx.item_fn(span, fn_id, args, quote_ty!(cx, ()), block);
+            let f = cx.item_fn(span, rule_fn_id, args, quote_ty!(cx, ()), block);
             stmts.push(cx.stmt_item(span, f));
         }
     }
@@ -356,21 +364,22 @@ where T: Ord + fmt::Debug + fmt::Display,
                 for (&tok, action) in state.lookahead.iter() {
                     expected.push(format!("`{}`", tok));
                     let pat = cx.pat_some(DUMMY_SP, cx.pat_tuple(DUMMY_SP, vec![to_pat(tok, cx), cx.pat_wild(DUMMY_SP)]));
-                    let arm_expr = match *action {
-                        LRAction::Shift(dest) => lit_u32(cx, dest as u32),
+                    match *action {
+                        LRAction::Shift(dest) => {
+                            let arm_expr = lit_u32(cx, dest as u32);
+                            arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr));
+                        }
                         LRAction::Reduce(_, rhs) => {
                             reduce_arms.entry(rhs as *const _).or_insert(vec![]).push(pat);
-                            continue;
                         }
-                        LRAction::Accept => unreachable!(),
-                    };
-                    arms.push(cx.arm(DUMMY_SP, vec![pat], arm_expr))
+                        LRAction::Accept => panic!("bug: accepting on a token other than EOF?"),
+                    }
                 }
                 if let Some(ref action) = state.eof {
                     expected.push("end of file".to_string());
                     let pat = cx.pat_none(DUMMY_SP);
                     match *action {
-                        LRAction::Shift(_) => unreachable!(),
+                        LRAction::Shift(_) => panic!("bug: shifting EOF?"),
                         LRAction::Reduce(_, rhs) => {
                             reduce_arms.entry(rhs as *const _).or_insert(vec![]).push(pat);
                         }
@@ -393,8 +402,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                 arms.push(quote_arm!(cx, _ => return ::std::result::Result::Err(($token_span_id, $err_msg_lit)),));
                 cx.arm(DUMMY_SP,
                     vec![pat_u32(cx, ix as u32)],
-                    cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, token_span_id),
-                    arms))
+                    cx.expr_match(DUMMY_SP, cx.expr_ident(DUMMY_SP, token_span_id), arms))
             }).chain(Some(quote_arm!(cx, _ => $unreachable,)).into_iter()).collect())),
         quote_stmt!(cx, match $token_span_id {
             Some(($token_id, $span_id)) => {
@@ -500,7 +508,8 @@ fn parse_parser<'a>(
 
     let range_fn_id = gensym("range");
     let range_fn =
-        if !parser.check(&token::OpenDelim(token::Paren)) && span_ty.node == ast::TyKind::Tup(vec![]) {
+        if !parser.check(&token::OpenDelim(token::Paren)) && span_ty.node ==
+        ast::TyKind::Tup(vec![]) {
             cx.item_fn(DUMMY_SP, range_fn_id, vec![
                 cx.arg(DUMMY_SP, gensym("_a"), span_ty.clone()),
                 cx.arg(DUMMY_SP, gensym("_b"), span_ty.clone()),

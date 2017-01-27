@@ -4,7 +4,7 @@ use std::fmt::Write;
 use syntax::ptr::P;
 use syntax::util::small_vector::SmallVector;
 use syntax::util::ThinVec;
-use syntax::{ast, ptr, codemap};
+use syntax::{ast, codemap};
 use syntax::ast::Ident;
 use syntax::parse::{parser, classify, PResult};
 use syntax::parse::token;
@@ -17,10 +17,10 @@ use syntax::ast::DUMMY_NODE_ID;
 use syntax::tokenstream::TokenTree;
 
 fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u64, ast::LitIntType::Unsigned(ast::UintTy::U32)))
+    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u128, ast::LitIntType::Unsigned(ast::UintTy::U32)))
 }
 fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u64, ast::LitIntType::Unsigned(ast::UintTy::Us)))
+    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u128, ast::LitIntType::Unsigned(ast::UintTy::Us)))
 }
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))
@@ -153,8 +153,8 @@ where T: Ord + fmt::Debug + fmt::Display,
     ]));
     let generics = ast::Generics {
         lifetimes: vec![],
-        ty_params: ptr::P::from_vec(vec![
-            cx.typaram(DUMMY_SP, it_ty_id, vec![], ptr::P::from_vec(vec![
+        ty_params: vec![
+            cx.typaram(DUMMY_SP, it_ty_id, vec![], vec![
                 cx.typarambound(cx.path_all(DUMMY_SP, true, vec![
                     cx.ident_of("std"),
                     cx.ident_of("iter"),
@@ -167,8 +167,8 @@ where T: Ord + fmt::Debug + fmt::Display,
                         span: DUMMY_SP,
                     }
                 ]))
-            ]), None)
-        ]),
+            ], None)
+        ],
         where_clause: ast::WhereClause {
             id: DUMMY_NODE_ID,
             predicates: vec![]

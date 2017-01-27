@@ -1,4 +1,4 @@
-#![feature(plugin_registrar, quote, rustc_private)]
+#![feature(plugin_registrar, quote, rustc_private, i128_type)]
 
 extern crate lalr;
 extern crate redfa;

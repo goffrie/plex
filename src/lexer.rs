@@ -1,7 +1,7 @@
 use syntax::ptr::P;
 use syntax::util::ThinVec;
 use syntax::util::small_vector::SmallVector;
-use syntax::{codemap, ast, ptr};
+use syntax::{codemap, ast};
 use syntax::ast::Ident;
 use syntax::parse::{self, parser, classify, PResult};
 use syntax::parse::token;
@@ -37,7 +37,8 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
             } else {
                 cx.pat(DUMMY_SP, ast::PatKind::Range(
                         cx.expr_lit(DUMMY_SP, ast::LitKind::Char(ch)),
-                        cx.expr_lit(DUMMY_SP, ast::LitKind::Char(end))
+                        cx.expr_lit(DUMMY_SP, ast::LitKind::Char(end)),
+                        ast::RangeEnd::Included
                         ))
             };
             subarms.push(ast::Arm {
@@ -228,7 +229,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
                 lifetime: text_lt,
                 bounds: Vec::new(),
             }],
-            ty_params: ptr::P::new(),
+            ty_params: vec![],
             where_clause: ast::WhereClause {
                 id: DUMMY_NODE_ID,
                 predicates: Vec::new(),

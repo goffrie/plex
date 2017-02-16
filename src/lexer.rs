@@ -113,7 +113,11 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
     try!(parser.expect(&token::OpenDelim(token::Paren)));
     let text_pat = try!(parser.parse_pat());
     let text_lt = if parser.eat(&token::Colon) {
-        try!(parser.parse_lifetime())
+        if let Some(lt) = parser.eat_lifetime() {
+            lt
+        } else {
+            return Err(parser.fatal("expected a lifetime"));
+        }
     } else {
         cx.lifetime(DUMMY_SP, Symbol::gensym("text"))
     };

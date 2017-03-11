@@ -262,7 +262,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                 reduce_stmts.push(quote_stmt!(cx, let $span_id = None;).unwrap());
             }
             reduce_stmts.extend(rhs.syms.iter()
-            .zip(arg_pats.into_iter())
+            .zip(arg_pats.iter().cloned())
             .rev()
             .map(|(sym, maybe_pat)| match maybe_pat {
                 Some(pat) => {
@@ -289,6 +289,20 @@ where T: Ord + fmt::Debug + fmt::Display,
                                                          cx.ident_of("pop"),
                                                          vec![])),
             }));
+            // Workaround; closures sometimes complain about capturing from externals
+            // if we don't "let" themselves within the closure first
+            let result = arg_pats.into_iter()
+                    .fold(result, |acc, maybe_pat| match maybe_pat {
+                        Some(pat) => {
+                            if let ast::PatKind::Ident(_, sid, _) = pat.node {
+                                let eid_expr = cx.expr_ident(DUMMY_SP, sid.node.clone());
+                                quote_expr!(cx, { let $pat = $eid_expr; $acc })
+                            } else {
+                                acc
+                            }
+                        },
+                        None => acc,
+                    });
             if rhs.syms.len() > 1 {
                 let len_minus_one = lit_usize(cx, rhs.syms.len() - 1);
                 // XXX: Annoying syntax :(
@@ -300,7 +314,9 @@ where T: Ord + fmt::Debug + fmt::Display,
             let rspan = result.span;
 
             let tmp = gensym("result");
-            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(), result));
+            let lambda_ty = lhs_ty.clone();
+            reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(),
+                P(quote_expr!(cx, ( || -> $lambda_ty { $result } )() ).unwrap())));
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
             ).unwrap());
@@ -702,6 +718,12 @@ fn parse_parser<'a>(
                             cx.arm(sp, vec![cx.pat(sp, ast::PatKind::TupleStruct(cx.path_ident(sp, terminal), pats.clone(), None))], expr),
                             quote_arm!(cx, _ => $unreachable,),
                         ]);
+                        let eid_pat = cx.pat_ident(sp, id);
+                        let eid_expr = cx.expr_ident(sp, id);
+
+                        // Workaround; closures sometimes complain about capturing from externals
+                        // if we don't "let" themselves within the closure first
+                        expr = quote_expr!(cx, { let $eid_pat = $eid_expr; $expr });
                         Some(cx.pat_ident(sp, id))
                     }
                     Binding::None => None,

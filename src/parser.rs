@@ -562,8 +562,12 @@ fn parse_parser<'a>(
             while parser.check(&token::Pound) {
                 // attributes
                 let attr = try!(parser.parse_attribute(false)); // don't allow "#![..]" syntax
-                match attr.value.node {
-                    ast::MetaItemKind::List(ref tokens) if attr.value.name == "no_reduce" => {
+                match attr.meta() {
+                    Some(ast::MetaItem {
+                        name,
+                        node: ast::MetaItemKind::List(ref tokens),
+                        ..
+                    }) if name == "no_reduce" => {
                         for token in tokens.iter() {
                             if let ast::NestedMetaItemKind::MetaItem(ref meta_item) = token.node {
                                 if let ast::MetaItemKind::Word = meta_item.node {
@@ -574,7 +578,11 @@ fn parse_parser<'a>(
                             parser.span_err(token.span, "not the name of a token");
                         }
                     }
-                    ast::MetaItemKind::Word if attr.value.name == "overriding" => {
+                    Some(ast::MetaItem {
+                        name,
+                        node: ast::MetaItemKind::Word,
+                        ..
+                    }) if name == "overriding" => {
                         priority = 1;
                     }
                     _ => parser.span_err(attr.span, "unknown attribute"),

@@ -531,8 +531,7 @@ fn parse_parser<'a>(
             let p2 = try!(parser.parse_ident());
             try!(parser.expect(&token::CloseDelim(token::Paren)));
             let body = try!(parser.parse_block());
-            let hi = parser.prev_span.hi;
-            cx.item_fn(codemap::mk_sp(lo, hi), range_fn_id, vec![
+            cx.item_fn(codemap::Span{ lo: lo, ..parser.prev_span }, range_fn_id, vec![
                 cx.arg(p1_sp, p1, span_ty.clone()),
                 cx.arg(p2_sp, p2, span_ty.clone()),
             ], span_ty.clone(), body)
@@ -606,7 +605,7 @@ fn parse_parser<'a>(
                             break;
                         }
                     }
-                    Binding::Enum(codemap::mk_sp(lo, parser.prev_span.hi), pats)
+                    Binding::Enum(codemap::Span{ lo: lo, ..parser.prev_span }, pats)
                 } else {
                     Binding::None
                 };
@@ -632,7 +631,7 @@ fn parse_parser<'a>(
                 // comma required
                 try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
             }
-            let sp = codemap::mk_sp(lo, parser.prev_span.hi);
+            let sp = codemap::Span{ lo: lo, ..parser.prev_span };
 
             rhss.push((rule, Action {
                 binds: binds,

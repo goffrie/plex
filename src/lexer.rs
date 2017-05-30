@@ -5,7 +5,7 @@ use syntax::{codemap, ast};
 use syntax::ast::Ident;
 use syntax::parse::{self, parser, classify, PResult};
 use syntax::parse::token;
-use syntax::symbol::{keywords, Symbol};
+use syntax::symbol::keywords;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use redfa::Dfa;
@@ -119,7 +119,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
                 (ast::Lifetime {
                     id: ast::DUMMY_NODE_ID,
                     span: parser.prev_span,
-                    name: ident.name
+                    ident: ident
                 })
             }
             _ => {
@@ -128,7 +128,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
             }
         }
     } else {
-        cx.lifetime(DUMMY_SP, Symbol::gensym("text"))
+        cx.lifetime(DUMMY_SP, Ident::from_str("text"))
     };
     try!(parser.expect(&token::CloseDelim(token::Paren)));
     try!(parser.expect(&token::RArrow));
@@ -156,7 +156,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         try!(parser.expect(&token::FatArrow));
 
         // start parsing the expr
-        let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR, None));
+        let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR, None));
         let optional_comma =
             // don't need a comma for blocks...
             classify::expr_is_simple_block(&*expr)

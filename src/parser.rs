@@ -617,7 +617,7 @@ fn parse_parser<'a>(
             try!(parser.expect(&token::FatArrow));
 
             // start parsing the expr
-            let expr = try!(parser.parse_expr_res(parser::Restrictions::RESTRICTION_STMT_EXPR, None));
+            let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR, None));
             let optional_comma =
                 // don't need a comma for blocks...
                 classify::expr_is_simple_block(&*expr)

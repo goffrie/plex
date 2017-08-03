@@ -159,7 +159,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR, None));
         let optional_comma =
             // don't need a comma for blocks...
-            classify::expr_is_simple_block(&*expr)
+            !classify::expr_requires_semi_to_be_stmt(&*expr)
             // or for the last arm
             || parser.token == token::Eof;
 
@@ -245,6 +245,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
             ty_params: vec![],
             where_clause: ast::WhereClause {
                 id: DUMMY_NODE_ID,
+                span: DUMMY_SP,
                 predicates: Vec::new(),
             },
         },

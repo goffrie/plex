@@ -256,7 +256,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                 // XXX: Annoying syntax :(
                 reduce_stmts.push(quote_stmt!(cx, match $span_stack_id.len() - $len { x => $span_stack_id.truncate(x) };).unwrap());
                 // Make the current_span available to the user by exposing it through a macro
-                reduce_stmts.push(quote_stmt!(cx, macro_rules! span {
+                reduce_stmts.push(quote_stmt!(cx, #[allow(unused_macros)] macro_rules! span {
                     () => { $span_id.unwrap() }
                 }).unwrap());
             } else {

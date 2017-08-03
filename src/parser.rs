@@ -207,7 +207,7 @@ where T: Ord + fmt::Debug + fmt::Display,
     let span_id = gensym("current_span");
     let token_span_id = gensym("token_span");
     let next_state_id = gensym("next_state");
-    let unreachable = cx.expr_unreachable(DUMMY_SP);
+    let unreachable = quote_expr!(cx, unreachable!());
 
     let mut stmts = Vec::new();
 
@@ -679,7 +679,7 @@ fn parse_parser<'a>(
     }).collect();
     let start = start.expect("need at least one nonterminal");
     let fake_start = symbol::Symbol::gensym("start");
-    let unreachable = cx.expr_unreachable(DUMMY_SP);
+    let unreachable = quote_expr!(cx, unreachable!());
     rules.insert(fake_start, vec![Rhs {
         syms: vec![Nonterminal(start)],
         act: Action {

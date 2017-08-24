@@ -14,8 +14,20 @@ use rustc_plugin as plugin;
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut plugin::Registry) {
-    reg.register_syntax_extension(Symbol::intern("parser"),
-        base::SyntaxExtension::NormalTT(Box::new(parser::expand_parser), None, true));
-    reg.register_syntax_extension(Symbol::intern("lexer"),
-        base::SyntaxExtension::NormalTT(Box::new(lexer::expand_lexer), None, true));
+    reg.register_syntax_extension(
+        Symbol::intern("parser"),
+        base::SyntaxExtension::NormalTT {
+            expander: Box::new(parser::expand_parser),
+            def_info: None,
+            allow_internal_unstable: false,
+            allow_internal_unsafe: false,
+        });
+    reg.register_syntax_extension(
+        Symbol::intern("lexer"),
+        base::SyntaxExtension::NormalTT {
+            expander: Box::new(lexer::expand_lexer),
+            def_info: None,
+            allow_internal_unstable: false,
+            allow_internal_unsafe: false,
+        });
 }

@@ -38,7 +38,7 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
                 cx.pat(DUMMY_SP, ast::PatKind::Range(
                         cx.expr_lit(DUMMY_SP, ast::LitKind::Char(ch)),
                         cx.expr_lit(DUMMY_SP, ast::LitKind::Char(end)),
-                        ast::RangeEnd::Included
+                        ast::RangeEnd::Included(ast::RangeSyntax::DotDotDot)
                         ))
             };
             subarms.push(ast::Arm {
@@ -46,6 +46,7 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
                 pats: vec![pat],
                 guard: None,
                 body: cx.expr_path(state_paths[target as usize].clone()),
+                beginning_vert: None,
             });
         }
         subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], cx.expr_path(state_paths[tr.default as usize].clone())));
@@ -59,7 +60,7 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
 fn parse_str_interior<'a>(parser: &mut parser::Parser<'a>) -> PResult<'a, String> {
     let (re_str, style) = try!(parser.parse_str());
     Ok(match style {
-        ast::StrStyle::Cooked => parse::str_lit(&re_str.as_str()),
+        ast::StrStyle::Cooked => parse::str_lit(&re_str.as_str(), None),
         ast::StrStyle::Raw(_) => parse::raw_str_lit(&re_str.as_str()),
     })
 }
@@ -156,7 +157,7 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         try!(parser.expect(&token::FatArrow));
 
         // start parsing the expr
-        let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR, None));
+        let expr = try!(parser.parse_expr_res(parser::Restrictions::STMT_EXPR, None));
         let optional_comma =
             // don't need a comma for blocks...
             !classify::expr_requires_semi_to_be_stmt(&*expr)

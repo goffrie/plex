@@ -523,7 +523,7 @@ fn parse_parser<'a>(
                 cx.arg(DUMMY_SP, gensym("_b"), span_ty.clone()),
             ], span_ty.clone(), cx.block_expr(cx.expr_tuple(DUMMY_SP, vec![])))
         } else {
-            let lo = parser.span.lo;
+            let lo = parser.span.lo();
             try!(parser.expect(&token::OpenDelim(token::Paren)));
             let p1_sp = parser.span;
             let p1 = try!(parser.parse_ident());
@@ -532,7 +532,7 @@ fn parse_parser<'a>(
             let p2 = try!(parser.parse_ident());
             try!(parser.expect(&token::CloseDelim(token::Paren)));
             let body = try!(parser.parse_block());
-            cx.item_fn(codemap::Span{ lo: lo, ..parser.prev_span }, range_fn_id, vec![
+            cx.item_fn(parser.prev_span.with_lo(lo), range_fn_id, vec![
                 cx.arg(p1_sp, p1, span_ty.clone()),
                 cx.arg(p2_sp, p2, span_ty.clone()),
             ], span_ty.clone(), body)
@@ -588,10 +588,10 @@ fn parse_parser<'a>(
                     _ => parser.span_err(attr.span, "unknown attribute"),
                 }
             }
-            let lo = parser.span.lo;
+            let lo = parser.span.lo();
             let (mut rule, mut binds) = (vec![], vec![]);
             while !parser.check(&token::FatArrow) {
-                let lo = parser.span.lo;
+                let lo = parser.span.lo();
                 let name = UnhygienicIdent(try!(parser.parse_ident()));
                 let bind = if parser.eat(&token::OpenDelim(token::Bracket)) {
                     let r = try!(parser.parse_pat());
@@ -606,7 +606,7 @@ fn parse_parser<'a>(
                             break;
                         }
                     }
-                    Binding::Enum(codemap::Span{ lo: lo, ..parser.prev_span }, pats)
+                    Binding::Enum(parser.prev_span.with_lo(lo), pats)
                 } else {
                     Binding::None
                 };
@@ -618,7 +618,7 @@ fn parse_parser<'a>(
             try!(parser.expect(&token::FatArrow));
 
             // start parsing the expr
-            let expr = try!(parser.parse_expr_res(parser::RESTRICTION_STMT_EXPR, None));
+            let expr = try!(parser.parse_expr_res(parser::Restrictions::STMT_EXPR, None));
             let optional_comma =
                 // don't need a comma for blocks...
                 !classify::expr_requires_semi_to_be_stmt(&*expr)
@@ -632,7 +632,7 @@ fn parse_parser<'a>(
                 // comma required
                 try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
             }
-            let sp = codemap::Span{ lo: lo, ..parser.prev_span };
+            let sp = parser.prev_span.with_lo(lo);
 
             rhss.push((rule, Action {
                 binds: binds,

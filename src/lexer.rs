@@ -1,27 +1,26 @@
-use syntax::ptr::P;
-use syntax::util::ThinVec;
-use syntax::util::small_vector::SmallVector;
-use syntax::{codemap, ast};
-use syntax::ast::Ident;
-use syntax::parse::{self, parser, classify, PResult};
-use syntax::parse::token;
-use syntax::symbol::keywords;
-use syntax::ext::base;
-use syntax::ext::build::AstBuilder;
+use std::collections::{BTreeSet, VecDeque};
+use std::char;
+
 use redfa::Dfa;
 use redfa::regex::Regex;
-use syntax::codemap::DUMMY_SP;
-use syntax::ast::DUMMY_NODE_ID;
-use syntax::tokenstream::TokenTree;
-use std::collections::{BTreeSet, VecDeque};
 
-pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, state_paths: &[ast::Path], ident: ast::Ident) -> P<ast::Item> {
-    let char_ty = quote_ty!(cx, char);
-    let state_arg = cx.arg(DUMMY_SP, Ident::from_str("state"), cx.ty_ident(DUMMY_SP, state_enum));
-    let char_arg = cx.arg(DUMMY_SP, Ident::from_str("ch"), char_ty.clone());
-    let mut arms = Vec::with_capacity(dfa.states.len());
-    for (tr, state_name) in dfa.states.iter().zip(state_paths) {
-        let mut subarms = Vec::new();
+use syn;
+use syn::buffer::Cursor;
+use syn::synom::{PResult, Synom};
+use syn::{Expr, Ident, Lifetime, LitStr, Type, Visibility};
+use quote::Tokens;
+use proc_macro2::{Delimiter, Span};
+use proc_macro::TokenStream;
+
+fn dfa_fn<T>(
+    dfa: &Dfa<char, T>,
+    state_enum: Ident,
+    state_paths: &[Tokens],
+    fn_name: Ident,
+) -> Tokens {
+    let mut arms = vec![];
+    for (tr, state_name) in dfa.states.iter().zip(state_paths.iter().cloned()) {
+        let mut subarms = vec![];
         let mut iter = tr.by_char.iter().peekable();
         while let Some((&ch, &target)) = iter.next() {
             let mut end = ch;
@@ -33,44 +32,30 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
                 iter.next();
             }
             let pat = if ch == end {
-                cx.pat_lit(DUMMY_SP, cx.expr_lit(DUMMY_SP, ast::LitKind::Char(ch)))
+                quote!(#ch)
             } else {
-                cx.pat(DUMMY_SP, ast::PatKind::Range(
-                        cx.expr_lit(DUMMY_SP, ast::LitKind::Char(ch)),
-                        cx.expr_lit(DUMMY_SP, ast::LitKind::Char(end)),
-                        ast::RangeEnd::Included(ast::RangeSyntax::DotDotDot)
-                        ))
+                quote!(#ch ... #end)
             };
-            subarms.push(ast::Arm {
-                attrs: Vec::new(),
-                pats: vec![pat],
-                guard: None,
-                body: cx.expr_path(state_paths[target as usize].clone()),
-                beginning_vert: None,
-            });
+            let body = state_paths[target as usize].clone();
+            subarms.push(quote!(#pat => #body));
         }
-        subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], cx.expr_path(state_paths[tr.default as usize].clone())));
-        let body = cx.expr_match(DUMMY_SP, quote_expr!(cx, ch), subarms);
-        arms.push(quote_arm!(cx, $state_name => $body,));
+        let default_state = state_paths[tr.default as usize].clone();
+        arms.push(quote!(#state_name => match ch {
+            #(#subarms,)*
+            _ => #default_state
+        }));
     }
-    let block = cx.block_expr(cx.expr_match(DUMMY_SP, quote_expr!(cx, state), arms));
-    cx.item_fn(DUMMY_SP, ident, vec![state_arg, char_arg], cx.ty_ident(DUMMY_SP, state_enum), block)
-}
-
-fn parse_str_interior<'a>(parser: &mut parser::Parser<'a>) -> PResult<'a, String> {
-    let (re_str, style) = try!(parser.parse_str());
-    Ok(match style {
-        ast::StrStyle::Cooked => parse::str_lit(&re_str.as_str(), None),
-        ast::StrStyle::Raw(_) => parse::raw_str_lit(&re_str.as_str()),
-    })
+    quote! {
+        fn #fn_name(state: #state_enum, ch: char) -> #state_enum {
+            match state {
+                #(#arms,)*
+            }
+        }
+    }
 }
 
 fn first_nullable<T>(vec: &[Regex<T>]) -> Option<usize> {
     vec.iter().position(Regex::nullable)
-}
-
-pub fn expand_lexer<'cx>(cx: &'cx mut base::ExtCtxt, sp: codemap::Span, args: &[TokenTree]) -> Box<base::MacResult+'cx> {
-    parse_lexer(cx, sp, args).unwrap_or_else(|_| base::DummyResult::any(sp))
 }
 
 fn dfa_make_names<V>(dfa: &Dfa<char, V>) -> Vec<String> {
@@ -100,193 +85,203 @@ fn dfa_make_names<V>(dfa: &Dfa<char, V>) -> Vec<String> {
     names
 }
 
-fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenTree]) -> PResult<'a, Box<base::MacResult+'static>>  {
-    let mut parser = cx.new_parser_from_tts(args);
+struct Rule {
+    pattern: LitStr,
+    expr: Expr,
+}
 
-    // first: parse 'fn name_of_lexer(text_variable) -> ResultType;'
-    let visibility = if parser.eat_keyword(keywords::Pub) {
-        ast::Visibility::Public
-    } else {
-        ast::Visibility::Inherited
-    };
-    try!(parser.expect_keyword(keywords::Fn));
-    let fn_name = try!(parser.parse_ident());
-    try!(parser.expect(&token::OpenDelim(token::Paren)));
-    let text_pat = try!(parser.parse_pat());
-    let text_lt = if parser.eat(&token::Colon) {
-        match parser.token {
-            token::Lifetime(ident) => {
-                parser.bump();
-                (ast::Lifetime {
-                    id: ast::DUMMY_NODE_ID,
-                    span: parser.prev_span,
-                    ident: ident
-                })
+fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
+    let mut rules = vec![];
+    while !input.eof() {
+        // FIXME: Make some nicer error messages, preferably when syn supports it.
+        let (pattern, input_) = LitStr::parse(input)?;
+        let (_, input_) = <Token![=>]>::parse(input_)?;
+        // Like in a `match` expression, braced block doesn't require a comma before the next rule.
+        let optional_comma = input_.group(Delimiter::Brace).is_some();
+        let (expr, input_) = Expr::parse(input_)?;
+        rules.push(Rule { pattern, expr });
+        match <Token![,]>::parse(input_) {
+            Ok((_, input_)) => {
+                input = input_;
             }
-            _ => {
-                parser.expected_tokens.push(parser::TokenType::Lifetime);
-                return Err(parser.fatal("expected a lifetime"));
-            }
-        }
-    } else {
-        cx.lifetime(DUMMY_SP, Ident::from_str("text"))
-    };
-    try!(parser.expect(&token::CloseDelim(token::Paren)));
-    try!(parser.expect(&token::RArrow));
-    let ret_ty = try!(parser.parse_ty());
-    try!(parser.expect(&token::Semi));
-
-    // now parse the token arms
-    let mut re_vec = Vec::new();
-    let mut actions = Vec::new();
-    while parser.token != token::Eof {
-        // parse '"regex" =>'
-        let re_str = try!(parse_str_interior(&mut parser));
-        let sp = parser.prev_span;
-        let re = match re_str.parse() {
-            Ok(r) => r,
             Err(e) => {
-                cx.span_err(sp, &*format!("invalid regular expression: {}", e));
-                Regex::Null // dummy
+                input = input_;
+                if !input.eof() && !optional_comma {
+                    return Err(e);
+                }
             }
-        };
-        if re.nullable() {
-            cx.span_err(sp, "token must not match the empty string");
         }
-
-        try!(parser.expect(&token::FatArrow));
-
-        // start parsing the expr
-        let expr = try!(parser.parse_expr_res(parser::Restrictions::STMT_EXPR, None));
-        let optional_comma =
-            // don't need a comma for blocks...
-            !classify::expr_requires_semi_to_be_stmt(&*expr)
-            // or for the last arm
-            || parser.token == token::Eof;
-
-        if optional_comma {
-            // consume optional comma
-            parser.eat(&token::Comma);
-        } else {
-            // comma required
-            try!(parser.expect_one_of(&[token::Comma], &[token::CloseDelim(token::Brace)]));
-        }
-
-        re_vec.push(re);
-        actions.push(expr);
     }
+    Ok((rules, input))
+}
+
+struct Lexer {
+    vis: Visibility,
+    name: Ident,
+    input: Ident,
+    lifetime: Option<Lifetime>,
+    return_type: Type,
+    rules: Vec<Rule>,
+}
+
+impl Synom for Lexer {
+    named!(parse -> Self, do_parse!(
+        vis: syn!(Visibility) >>
+        keyword!(fn) >>
+        name: syn!(Ident) >>
+        input_and_lifetime: parens!(tuple!(
+            syn!(Ident),
+            option!(do_parse!(punct!(:) >> lt: syn!(Lifetime) >> (lt)))
+        )) >>
+        punct!(->) >>
+        return_type: syn!(Type) >>
+        punct!(;) >>
+        rules: call!(parse_rules) >>
+        ({
+            let (_, (input, lifetime)) = input_and_lifetime;
+            Lexer { vis, name, input, lifetime, return_type, rules }
+        })
+    ));
+}
+
+pub fn lexer(input: TokenStream) -> TokenStream {
+    let Lexer {
+        vis,
+        name,
+        input,
+        lifetime,
+        return_type,
+        rules,
+    } = syn::parse(input).unwrap_or_else(|e| {
+        panic!("parse error: {:?}", e);
+    });
+
+    let (re_vec, actions): (Vec<Regex<_>>, Vec<Expr>) = rules
+        .into_iter()
+        .map(|Rule { pattern, expr }| {
+            let re = match pattern.value().parse() {
+                Ok(r) => r,
+                Err(e) => {
+                    pattern
+                        .span
+                        .unstable()
+                        .error(format!("invalid regular expression: {}", e))
+                        .emit();
+                    Regex::Null // dummy
+                }
+            };
+            if re.nullable() {
+                pattern
+                    .span
+                    .unstable()
+                    .error("token must not match the empty string")
+                    .emit();
+            }
+            (re, expr)
+        })
+        .unzip();
 
     let (dfa, _) = Dfa::from_derivatives(vec![re_vec]);
     let dfa = dfa.map(|vec| first_nullable(&vec)).minimize().map(|&x| x);
-    let error_state_ix = dfa.states.iter().enumerate()
-        .position(|(ix, state)| state.value.is_none() && state.by_char.is_empty() && state.default as usize == ix);
+    let error_state_ix = dfa.states.iter().enumerate().position(|(ix, state)| {
+        state.value.is_none() && state.by_char.is_empty() && state.default as usize == ix
+    });
     if error_state_ix.is_none() {
-        cx.span_warn(sp, "this DFA has no error state; it will always scan the entire input");
+        Span::call_site()
+            .unstable()
+            .warning("this DFA has no error state; it will always scan the entire input")
+            .emit();
     }
-    let mut names: Vec<_> = dfa_make_names(&dfa).into_iter().map(|x| Ident::from_str(&x)).collect();
+
+    // Construct "human-readable" names for each of the DFA states.
+    // This is purely to make the generated code nicer.
+    let mut names: Vec<Ident> = dfa_make_names(&dfa).into_iter().map(Ident::from).collect();
+    // If we've identified an error state, give it the special name "Error".
     if let Some(ix) = error_state_ix {
-        names[ix] = Ident::from_str("Error");
+        names[ix] = Ident::from("Error");
     }
-    let state_enum = Ident::from_str("State");
-    let state_paths: Vec<_> = names.iter().map(|name| cx.path(DUMMY_SP, vec![state_enum, *name])).collect();
-    let initial_state = &state_paths[0];
-    let error_state = error_state_ix.map(|ix| &state_paths[ix]);
+    // The full paths to each of the state names (e.g. `State::Error`).
+    let state_paths: Vec<Tokens> = names.iter().map(|name| quote!(State::#name)).collect();
 
-    let dfa_transition_fn = Ident::from_str(&*format!("transition"));
-    let dfa_acceptance_fn = Ident::from_str(&*format!("accepting"));
+    let initial_state = state_paths[0].clone();
+    let error_state = error_state_ix.map(|ix| state_paths[ix].clone());
 
-    let input = Ident::from_str("input");
+    // Construct the actual DFA transition function, which, given a `State` and the next character, returns the next `State`.
+    let transition_fn = dfa_fn(
+        &dfa,
+        Ident::from("State"),
+        &state_paths,
+        Ident::from("transition"),
+    );
 
-    let mut helpers = Vec::new();
-    helpers.push(dfa_fn(cx, &dfa, state_enum, &state_paths, dfa_transition_fn));
-    helpers.push({
-        let mut arms: Vec<_> = dfa.states.iter()
+    let accepting_fn = {
+        let arms = dfa.states
+            .iter()
             .map(|state| state.value)
             .zip(&state_paths)
-            .filter_map(|(maybe_act, state)| maybe_act.map(|act| {
-                let act = act as u32;
-                quote_arm!(cx, $state => Some($act),)
-            })).collect();
-        arms.push(quote_arm!(cx, _ => None,));
-        quote_item!(cx, fn $dfa_acceptance_fn(state: $state_enum) -> Option<u32> {
+            .filter_map(|(maybe_act, state)| {
+                maybe_act.map(|act| {
+                    let act = act as u32;
+                    quote!(#state => Some(#act))
+                })
+            });
+        quote!(fn accepting(state: State) -> Option<u32> {
             match state {
-                $arms
+                #(#arms,)*
+                _ => None
             }
-        }).unwrap()
-    });
+        })
+    };
 
-    let compute_arms: Vec<_> = actions.into_iter().enumerate().map(|(i, expr)| {
-        let i = i as u32;
-        quote_arm!(cx, $i => $expr,)
-    }).collect();
-    let compute_result = quote_expr!(cx, match which {
-        $compute_arms
-        _ => unreachable!(),
-    });
-    let break_on_error = error_state.map(|state| quote_stmt!(cx,
-                                                             if let $state = state {
-                                                                 break;
-                                                             }).unwrap());
-    let final_fn = cx.item_fn_poly(DUMMY_SP,
-        fn_name,
-        vec![cx.arg(DUMMY_SP, input,
-                    cx.ty_rptr(DUMMY_SP,
-                               cx.ty_rptr(DUMMY_SP,
-                                          cx.ty_ident(DUMMY_SP, Ident::from_str("str")),
-                                          Some(text_lt), ast::Mutability::Immutable),
-                               None, ast::Mutability::Mutable))],
-        quote_ty!(cx, Option<$ret_ty>),
-        ast::Generics {
-            span: DUMMY_SP,
-            lifetimes: vec![ast::LifetimeDef {
-                attrs: ThinVec::new(),
-                lifetime: text_lt,
-                bounds: Vec::new(),
-            }],
-            ty_params: vec![],
-            where_clause: ast::WhereClause {
-                id: DUMMY_NODE_ID,
-                span: DUMMY_SP,
-                predicates: Vec::new(),
-            },
-        },
-        cx.block(DUMMY_SP,
-                 Some(cx.stmt_item(DUMMY_SP, cx.item(DUMMY_SP, state_enum, vec![
-                     quote_attr!(cx, #[derive(Copy, Clone)]),
-                     quote_attr!(cx, #[allow(non_camel_case_types)]),
-                 ], ast::ItemKind::Enum(ast::EnumDef {
-                     variants: names.iter().map(|&name| cx.variant(DUMMY_SP, name, vec![])).collect()
-                 }, ast::Generics::default())))).into_iter()
-                 .chain(helpers.into_iter().map(|x| cx.stmt_item(DUMMY_SP, x)))
-                 .chain(Some(cx.stmt_expr(quote_expr!(cx, {
-                     let mut state = $initial_state;
-                     let mut remaining = input.char_indices();
-                     let mut last_match = None;
-                     loop {
-                         if let Some(which) = $dfa_acceptance_fn(state) {
-                             last_match = Some((which, remaining.clone()));
-                         }
-                         $break_on_error
-                         if let Some((_, ch)) = remaining.next() {
-                             state = $dfa_transition_fn(state, ch);
-                         } else {
-                             break;
-                         }
-                     }
-                     if let Some((which, mut remaining)) = last_match {
-                         let ix = if let Some((ix, _)) = remaining.next() {
-                             ix
-                         } else {
-                             input.len()
-                         };
-                         let $text_pat = &input[..ix];
-                         *input = &input[ix..];
-                         Some($compute_result)
-                     } else {
-                         None
-                     }
-                 }))))
-                 .collect())
-    ).map(|mut item| { item.vis = visibility; item });
-    Ok(base::MacEager::items(SmallVector::one(final_fn)))
+    let compute_result = {
+        let compute_arms = actions.into_iter().enumerate().map(|(i, expr)| {
+            let i = i as u32;
+            quote!(#i => #expr)
+        });
+        quote!(match which {
+            #(#compute_arms,)*
+            _ => unreachable!()
+        })
+    };
+    quote!(
+        #vis fn #name #(<#lifetime>)* (input: &#(#lifetime)* str) -> Option<(#return_type, &#(#lifetime)* str)> {
+            #[derive(Copy, Clone)]
+            #[allow(non_camel_case_types)]
+            enum State {
+                #(#names,)*
+            }
+            #transition_fn
+            #accepting_fn
+            let mut state = #initial_state;
+            let mut remaining = input.char_indices();
+            let mut last_match = None;
+            loop {
+                if let Some(which) = accepting(state) {
+                    last_match = Some((which, remaining.clone()));
+                }
+                #( // only produce this if `error_state` exists.
+                    if let #error_state = state {
+                        break;
+                    }
+                )*
+                if let Some((_, ch)) = remaining.next() {
+                    state = transition(state, ch);
+                } else {
+                    break;
+                }
+            }
+            if let Some((which, mut remaining)) = last_match {
+                let ix = if let Some((ix, _)) = remaining.next() {
+                    ix
+                } else {
+                    input.len()
+                };
+                let #input = &input[..ix];
+                let rule_result = #compute_result;
+                Some((rule_result, &input[ix..]))
+            } else {
+                None
+            }
+        }
+    ).into()
 }

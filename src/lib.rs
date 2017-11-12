@@ -1,33 +1,27 @@
-#![feature(plugin_registrar, quote, rustc_private, i128_type)]
+#![recursion_limit = "128"]
+#![feature(proc_macro)]
 
 extern crate lalr;
+//extern crate literalext;
+extern crate proc_macro2;
+extern crate proc_macro;
+#[macro_use]
+extern crate quote;
 extern crate redfa;
-extern crate syntax;
-extern crate rustc_plugin;
+#[macro_use]
+extern crate syn;
 
-pub mod lexer;
-pub mod parser;
+mod lexer;
+mod parser;
 
-use syntax::ext::base;
-use syntax::symbol::Symbol;
-use rustc_plugin as plugin;
+use proc_macro::TokenStream;
 
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut plugin::Registry) {
-    reg.register_syntax_extension(
-        Symbol::intern("parser"),
-        base::SyntaxExtension::NormalTT {
-            expander: Box::new(parser::expand_parser),
-            def_info: None,
-            allow_internal_unstable: false,
-            allow_internal_unsafe: false,
-        });
-    reg.register_syntax_extension(
-        Symbol::intern("lexer"),
-        base::SyntaxExtension::NormalTT {
-            expander: Box::new(lexer::expand_lexer),
-            def_info: None,
-            allow_internal_unstable: false,
-            allow_internal_unsafe: false,
-        });
+#[proc_macro]
+pub fn lexer(tok: TokenStream) -> TokenStream {
+    lexer::lexer(tok)
+}
+
+#[proc_macro]
+pub fn parser(tok: TokenStream) -> TokenStream {
+    parser::parser(tok)
 }

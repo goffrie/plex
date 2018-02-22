@@ -238,12 +238,11 @@ fn parse_lexer<'a>(cx: &mut base::ExtCtxt<'a>, sp: codemap::Span, args: &[TokenT
         quote_ty!(cx, Option<$ret_ty>),
         ast::Generics {
             span: DUMMY_SP,
-            lifetimes: vec![ast::LifetimeDef {
+            params: vec![ast::GenericParam::Lifetime(ast::LifetimeDef {
                 attrs: ThinVec::new(),
                 lifetime: text_lt,
                 bounds: Vec::new(),
-            }],
-            ty_params: vec![],
+            })],
             where_clause: ast::WhereClause {
                 id: DUMMY_NODE_ID,
                 span: DUMMY_SP,

@@ -152,9 +152,8 @@ where T: Ord + fmt::Debug + fmt::Display,
         span_ty.clone(),
     ]));
     let generics = ast::Generics {
-        lifetimes: vec![],
-        ty_params: vec![
-            cx.typaram(DUMMY_SP, it_ty_id, vec![], vec![
+        params: vec![
+            ast::GenericParam::Type(cx.typaram(DUMMY_SP, it_ty_id, vec![], vec![
                 cx.typarambound(cx.path_all(DUMMY_SP, true, vec![
                     cx.ident_of("std"),
                     cx.ident_of("iter"),
@@ -167,7 +166,7 @@ where T: Ord + fmt::Debug + fmt::Display,
                         span: DUMMY_SP,
                     }
                 ]))
-            ], None)
+            ], None))
         ],
         where_clause: ast::WhereClause {
             id: DUMMY_NODE_ID,

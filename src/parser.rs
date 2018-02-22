@@ -20,7 +20,7 @@ fn lit_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Expr> {
     cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u128, ast::LitIntType::Unsigned(ast::UintTy::U32)))
 }
 fn lit_usize(cx: &base::ExtCtxt, val: usize) -> P<ast::Expr> {
-    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u128, ast::LitIntType::Unsigned(ast::UintTy::Us)))
+    cx.expr_lit(DUMMY_SP, ast::LitKind::Int(val as u128, ast::LitIntType::Unsigned(ast::UintTy::Usize)))
 }
 fn pat_u32(cx: &base::ExtCtxt, val: u32) -> P<ast::Pat> {
     cx.pat_lit(DUMMY_SP, lit_u32(cx, val))

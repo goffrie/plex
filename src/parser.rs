@@ -317,7 +317,7 @@ where T: Ord + fmt::Debug + fmt::Display,
             let tmp = gensym("result");
             let lambda_ty = lhs_ty.clone();
             reduce_stmts.push(cx.stmt_let_typed(DUMMY_SP, false, tmp, lhs_ty.clone(),
-                P(quote_expr!(cx, ( || -> $lambda_ty { $result } )() ).unwrap())));
+                P(quote_expr!(cx, ( || -> $lambda_ty { $result } )() ).into_inner())));
             reduce_stmts.push(quote_stmt!(cx,
                 $stack_id.push(Box::new($tmp) as Box<::std::any::Any>);
             ).unwrap());
@@ -745,7 +745,7 @@ fn parse_parser<'a>(
                 expr = P(quote_expr!(cx, {
                     println!("reduce by {}", $rule_str);
                     $expr
-                }).unwrap());
+                }).into_inner());
             }
 
             (expr, args, act.span)

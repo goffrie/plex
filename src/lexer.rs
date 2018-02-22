@@ -46,7 +46,6 @@ pub fn dfa_fn<T>(cx: &base::ExtCtxt, dfa: &Dfa<char, T>, state_enum: Ident, stat
                 pats: vec![pat],
                 guard: None,
                 body: cx.expr_path(state_paths[target as usize].clone()),
-                beginning_vert: None,
             });
         }
         subarms.push(cx.arm(DUMMY_SP, vec![quote_pat!(cx, _)], cx.expr_path(state_paths[tr.default as usize].clone())));

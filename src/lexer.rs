@@ -94,13 +94,13 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
     let mut rules = vec![];
     while !input.eof() {
         // FIXME: Make some nicer error messages, preferably when syn supports it.
-        let (pattern, input_) = LitStr::parse(input)?;
-        let (_, input_) = <Token![=>]>::parse(input_)?;
+        let (pattern, input_) = <LitStr as Synom>::parse(input)?;
+        let (_, input_) = <Token![=>] as Synom>::parse(input_)?;
         // Like in a `match` expression, braced block doesn't require a comma before the next rule.
         let optional_comma = input_.group(Delimiter::Brace).is_some();
-        let (expr, input_) = Expr::parse(input_)?;
+        let (expr, input_) = <Expr as Synom>::parse(input_)?;
         rules.push(Rule { pattern, expr });
-        match <Token![,]>::parse(input_) {
+        match <Token![,] as Synom>::parse(input_) {
             Ok((_, input_)) => {
                 input = input_;
             }

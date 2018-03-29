@@ -1,8 +1,8 @@
 #![recursion_limit = "128"]
 #![feature(proc_macro)]
+#![warn(unused_extern_crates)]
 
 extern crate lalr;
-//extern crate literalext;
 extern crate proc_macro2;
 extern crate proc_macro;
 #[macro_use]

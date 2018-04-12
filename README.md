@@ -17,11 +17,12 @@ You can find a demo in `examples/demo.rs`. Note that nightly Rust is required.
 
 ## Usage
 
-First, include the plugin.
+First, include `plex`.
 
 ```rust
-#![feature(plugin)]
-#![plugin(plex)]
+#![feature(use_extern_macros)]
+extern crate plex;
+use plex::{lexer, parser};
 ```
 
 ### Creating a lexer

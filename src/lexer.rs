@@ -163,7 +163,7 @@ pub fn lexer(input: TokenStream) -> TokenStream {
                 Ok(r) => r,
                 Err(e) => {
                     pattern
-                        .span
+                        .span()
                         .unstable()
                         .error(format!("invalid regular expression: {}", e))
                         .emit();
@@ -172,7 +172,7 @@ pub fn lexer(input: TokenStream) -> TokenStream {
             };
             if re.nullable() {
                 pattern
-                    .span
+                    .span()
                     .unstable()
                     .error("token must not match the empty string")
                     .emit();

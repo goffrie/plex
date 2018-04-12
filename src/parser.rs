@@ -154,16 +154,15 @@ where
         let lhs_ty = &types[lhs];
         for rhs in rhss.iter() {
             let (result, arg_pats, rhs_span) = to_expr(lhs, &rhs.act, &rhs.syms);
-            let span = rhs_span.resolved_at(Span::def_site());
             let len = rhs.syms.len();
             let current_span_stmt = if rhs.syms.len() > 0 {
-                let current_span_ident = quote_spanned!(span => current_span);
+                let current_span_ident = quote_spanned!(rhs_span => current_span);
                 // Make the current_span available to the user by exposing it through a macro whose name is unhygienic.
-                let span_macro = quote_spanned!(rhs_span.resolved_at(Span::call_site()) =>
+                let span_macro = quote_spanned!(Span::call_site() =>
                     #[allow(unused_macros)] macro_rules! span {
                         () => { #current_span_ident.unwrap() }
                     });
-                quote_spanned!(span =>
+                quote_spanned!(rhs_span =>
                     let current_span: Option<#span_ty> = {
                         let sp = range_array(&span_stack[(span_stack.len() - #len)..]);
                         let newlen = span_stack.len() - #len;
@@ -173,7 +172,7 @@ where
                     #span_macro
                 )
             } else {
-                quote_spanned!(span =>
+                quote_spanned!(rhs_span =>
                     let current_span: Option<#span_ty> = None;
                 )
             };
@@ -186,24 +185,24 @@ where
                             Terminal(_) => token_ty.clone(),
                             Nonterminal(ref n) => types[n].clone(),
                         };
-                        quote_spanned!(span =>
+                        quote_spanned!(rhs_span =>
                             let #pat: #ty = *stack.pop().unwrap().downcast().unwrap();
                         )
                     }
-                    None => quote_spanned!(span => stack.pop();),
+                    None => quote_spanned!(rhs_span => stack.pop();),
                 },
             ));
             if rhs.syms.len() > 1 {
                 let len_minus_one = rhs.syms.len() - 1;
                 // XXX: Annoying syntax :(
                 reduce_stmts.push(
-                    quote_spanned!(span => match state_stack.len() - #len_minus_one { x => state_stack.truncate(x) };),
+                    quote_spanned!(rhs_span => match state_stack.len() - #len_minus_one { x => state_stack.truncate(x) };),
                 );
             } else if rhs.syms.len() == 0 {
-                reduce_stmts.push(quote_spanned!(span => state_stack.push(*state);));
+                reduce_stmts.push(quote_spanned!(rhs_span => state_stack.push(*state);));
             }
             reduce_stmts.push(quote_spanned!(
-                span =>
+                rhs_span =>
                 *state = #goto_fn(*state_stack.last().unwrap());
                 let result: #lhs_ty = ( || -> #lhs_ty { #result } )();
                 stack.push(Box::new(result) as Box<#any_ty>);
@@ -212,7 +211,7 @@ where
 
             let fn_id = rule_fn_ids.get(&(rhs as *const _)).unwrap().clone();
             stmts.push(quote_spanned!(
-                span =>
+                rhs_span =>
                 fn #fn_id(
                     stack: &mut Vec<Box<#any_ty>>,
                     span_stack: &mut Vec<Option<#span_ty>>,
@@ -372,7 +371,7 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
                 _ => {
                     // FIXME non-ideal span
                     meta.name()
-                        .span
+                        .span()
                         .unstable()
                         .error("unknown attribute")
                         .emit();
@@ -406,7 +405,7 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
                     }
                     RuleRhsItem::Destructure(ident, span, pats)
                 } else {
-                    sp_hi = ident.span;
+                    sp_hi = ident.span();
                     RuleRhsItem::Symbol(ident)
                 },
             );
@@ -543,10 +542,10 @@ pub fn parser(input: TokenStream) -> TokenStream {
         }
         match rules.entry(lhs) {
             Entry::Occupied(ent) => {
-                lhs.span
+                lhs.span()
                     .unstable()
                     .error("duplicate nonterminal")
-                    .span_note(ent.key().span.unstable(), "first definition here")
+                    .span_note(ent.key().span().unstable(), "first definition here")
                     .emit();
             }
             Entry::Vacant(ent) => {
@@ -594,7 +593,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
     let fake_start = Ident::from("__FIXME__start");
     fake_rule = Rule {
         rhs: vec![],
-        rhs_span: Span::def_site().unstable(),
+        rhs_span: proc_macro::Span::def_site(),
         action: quote!(),
         exclusions: BTreeSet::new(),
         exclude_eof: false,
@@ -681,8 +680,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
                 r2,
             } => {
                 // FIXME: wtf this span
-                Span::call_site()
-                    .unstable()
+                proc_macro::Span::call_site()
                     .error(format!(
                         "reduce-reduce conflict:
 state: {}

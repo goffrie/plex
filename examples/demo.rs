@@ -1,4 +1,5 @@
 #![feature(use_extern_macros)]
+#![feature(proc_macro_gen)]
 extern crate plex;
 
 use std::io::Read;

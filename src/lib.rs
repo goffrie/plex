@@ -18,10 +18,10 @@ use proc_macro::TokenStream;
 
 #[proc_macro]
 pub fn lexer(tok: TokenStream) -> TokenStream {
-    lexer::lexer(tok)
+    lexer::lexer(tok.into()).into()
 }
 
 #[proc_macro]
 pub fn parser(tok: TokenStream) -> TokenStream {
-    parser::parser(tok)
+    parser::parser(tok.into()).into()
 }

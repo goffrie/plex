@@ -20,6 +20,6 @@ crate-type = ["proc-macro"]
 
 lalr = "0.0.2"
 redfa = "0.0.2"
-syn = { version = "0.13.1", features = ["extra-traits", "full"] }
-proc-macro2 = { version = "0.3.6", features = ["nightly"] }
-quote = "0.5.1"
+syn = { version = "0.14.0", features = ["extra-traits", "full"] }
+proc-macro2 = { version = "0.4.3", features = ["nightly"] }
+quote = "0.6.0"

@@ -1,15 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write};
 
 use lalr::*;
 
+use proc_macro;
+use proc_macro2::{Delimiter, Span, TokenStream};
+use quote::ToTokens;
 use syn::buffer::Cursor;
 use syn::synom::{PResult, Synom};
 use syn::{self, Attribute, Block, Expr, Ident, Meta, NestedMeta, Pat, Type, Visibility};
-use quote::{ToTokens, Tokens};
-use proc_macro2::{Delimiter, Span};
-use proc_macro::{self, TokenStream};
 
 /// Return the most frequent item in the given iterator, or None if it is empty.
 /// Picks an arbitrary item in case of a tie.
@@ -52,13 +52,13 @@ pub fn lr1_machine<'a, T, N, A, FM, FA, FR, FO>(
     mut to_expr: FA,
     reduce_on: FR,
     priority_of: FO,
-) -> Result<Tokens, LR1Conflict<'a, T, N, A>>
+) -> Result<TokenStream, LR1Conflict<'a, T, N, A>>
 where
     T: Ord + fmt::Debug + fmt::Display,
     N: Ord + fmt::Debug,
     A: fmt::Debug,
-    FM: FnMut(&T) -> Tokens,
-    FA: FnMut(&N, &A, &[Symbol<T, N>]) -> (Tokens, Vec<Option<Tokens>>, Span),
+    FM: FnMut(&T) -> TokenStream,
+    FA: FnMut(&N, &A, &[Symbol<T, N>]) -> (TokenStream, Vec<Option<TokenStream>>, Span),
     FR: FnMut(&Rhs<T, N, A>, Option<&T>) -> bool,
     FO: FnMut(&Rhs<T, N, A>, Option<&T>) -> i32,
 {
@@ -71,7 +71,7 @@ where
         Terminal(_) => panic!("bad grammar"),
         Nonterminal(ref x) => x,
     };
-    let any_ty = quote_spanned!(Span::call_site() => ::std::any::Any);
+    let any_ty = quote!(::std::any::Any);
     let start_ty = &types[actual_start];
     let table: LR1ParseTable<T, N, A> = grammar.lalr1(reduce_on, priority_of)?;
     let rule_fn_ids: BTreeMap<_, _> = grammar
@@ -84,14 +84,14 @@ where
             rhss.iter().map(|rhs| rhs as *const _)
         })
         .enumerate()
-        .map(|(i, k)| (k, Ident::from(format!("reduce_{}", i))))
+        .map(|(i, k)| (k, Ident::new(&format!("reduce_{}", i), Span::call_site())))
         .collect();
     let goto_fn_ids: BTreeMap<_, _> = grammar
         .rules
         .keys()
         .filter(|&lhs| *lhs != grammar.start)
         .enumerate()
-        .map(|(i, lhs)| (lhs, Ident::from(format!("goto_{}", i))))
+        .map(|(i, lhs)| (lhs, Ident::new(&format!("goto_{}", i), Span::call_site())))
         .collect();
 
     let mut stmts = Vec::new();
@@ -150,18 +150,19 @@ where
         if *lhs == grammar.start || lhs_unreachable.contains(&lhs) {
             continue;
         }
-        let goto_fn = goto_fn_ids[lhs];
+        let goto_fn = goto_fn_ids[lhs].clone();
         let lhs_ty = &types[lhs];
         for rhs in rhss.iter() {
             let (result, arg_pats, rhs_span) = to_expr(lhs, &rhs.act, &rhs.syms);
             let len = rhs.syms.len();
             let current_span_stmt = if rhs.syms.len() > 0 {
-                let current_span_ident = quote_spanned!(rhs_span => current_span);
                 // Make the current_span available to the user by exposing it through a macro whose name is unhygienic.
-                let span_macro = quote_spanned!(Span::call_site() =>
+                let current_span_ident = quote_spanned!(rhs_span => current_span);
+                let span_macro = quote!(
                     #[allow(unused_macros)] macro_rules! span {
                         () => { #current_span_ident.unwrap() }
-                    });
+                    }
+                );
                 quote_spanned!(rhs_span =>
                     let current_span: Option<#span_ty> = {
                         let sp = range_array(&span_stack[(span_stack.len() - #len)..]);
@@ -271,7 +272,7 @@ where
                 };
             }
             for (rhs_ptr, pats) in reduce_arms.into_iter() {
-                let reduce_fn = rule_fn_ids[&rhs_ptr];
+                let reduce_fn = rule_fn_ids[&rhs_ptr].clone();
                 arms.push(quote!(#(#pats)|* => {
                     #reduce_fn(&mut stack, &mut span_stack, &mut state_stack, &mut state);
                     continue
@@ -301,8 +302,9 @@ where
             }
         )
     });
+    // `quote` bug: can't quote `'static`, so use `&'a str` for any `'a`. hopefully this is fine.
     Ok(quote!(
-        #vis fn #name<I: Iterator<Item=(#token_ty, #span_ty)>>(mut it: I) -> Result<#start_ty, (Option<(#token_ty, #span_ty)>, &'static str)> {
+        #vis fn #name<'a, I: Iterator<Item=(#token_ty, #span_ty)>>(mut it: I) -> Result<#start_ty, (Option<(#token_ty, #span_ty)>, &'a str)> {
             #(#stmts)*
         }
     ))
@@ -316,11 +318,11 @@ enum RuleRhsItem {
 }
 
 impl RuleRhsItem {
-    fn ident(&self) -> Ident {
+    fn ident(&self) -> &Ident {
         match *self {
-            RuleRhsItem::Symbol(ident)
-            | RuleRhsItem::SymbolPat(ident, _)
-            | RuleRhsItem::Destructure(ident, _, _) => ident,
+            RuleRhsItem::Symbol(ref ident)
+            | RuleRhsItem::SymbolPat(ref ident, _)
+            | RuleRhsItem::Destructure(ref ident, _, _) => ident,
         }
     }
 }
@@ -329,7 +331,7 @@ impl RuleRhsItem {
 struct Rule {
     rhs: Vec<RuleRhsItem>,
     rhs_span: proc_macro::Span,
-    action: Tokens,
+    action: TokenStream,
     exclusions: BTreeSet<Ident>,
     exclude_eof: bool,
     priority: i32,
@@ -349,11 +351,11 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
             match meta {
                 Meta::List(ref list) if list.ident == "no_reduce" => {
                     for token in &list.nested {
-                        if let NestedMeta::Meta(Meta::Word(ident)) = *token {
+                        if let NestedMeta::Meta(Meta::Word(ref ident)) = *token {
                             if ident == "EOF" {
                                 exclude_eof = true;
                             } else {
-                                exclusions.insert(ident);
+                                exclusions.insert(ident.clone());
                             }
                         } else {
                             // FIXME bad span here
@@ -390,7 +392,8 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
                     let (pat, inner_) = Pat::parse(inner)?;
                     input_end!(inner_,)?;
                     RuleRhsItem::SymbolPat(ident, pat)
-                } else if let Some((mut inner, span, input_)) = input.group(Delimiter::Parenthesis) {
+                } else if let Some((mut inner, span, input_)) = input.group(Delimiter::Parenthesis)
+                {
                     sp_hi = span;
                     input = input_;
                     let mut pats = vec![];
@@ -423,7 +426,7 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
         rules.push(Rule {
             rhs,
             rhs_span,
-            action: action.into_tokens(),
+            action: action.into_token_stream(),
             exclusions,
             exclude_eof,
             priority,
@@ -529,18 +532,18 @@ fn pretty(x: &ItemSet<Ident, Ident, &Rule>, pad: &str) -> String {
 }
 
 pub fn parser(input: TokenStream) -> TokenStream {
-    let parser: Parser = syn::parse(input).expect("parse error");
+    let parser: Parser = syn::parse(input.into()).expect("parse error");
     let fake_rule; // N.B. must go before `rules` to appease dropck
     let mut rules = BTreeMap::new();
     let mut types = BTreeMap::new();
     let mut start = None;
     for rule_set in &parser.rule_sets {
         // parse "LHS: Type {"
-        let lhs = rule_set.lhs;
+        let lhs = &rule_set.lhs;
         if start.is_none() {
-            start = Some(lhs);
+            start = Some(lhs.clone());
         }
-        match rules.entry(lhs) {
+        match rules.entry(lhs.clone()) {
             Entry::Occupied(ent) => {
                 lhs.span()
                     .unstable()
@@ -549,7 +552,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
                     .emit();
             }
             Entry::Vacant(ent) => {
-                types.insert(lhs, rule_set.return_ty.clone());
+                types.insert(lhs.clone(), rule_set.return_ty.clone());
                 ent.insert(&rule_set.rules);
             }
         }
@@ -570,10 +573,11 @@ pub fn parser(input: TokenStream) -> TokenStream {
                 .iter()
                 .map(|rule| {
                     // figure out which symbols in `rule` are nonterminals vs terminals
-                    let syms = rule.rhs
+                    let syms = rule
+                        .rhs
                         .iter()
                         .map(|tok| {
-                            let ident = tok.ident();
+                            let ident = tok.ident().clone();
                             if types.contains_key(&ident) {
                                 Nonterminal(ident)
                             } else {
@@ -590,23 +594,21 @@ pub fn parser(input: TokenStream) -> TokenStream {
             (lhs, rhss)
         })
         .collect();
-    let fake_start = Ident::from("__FIXME__start");
+    let fake_start = Ident::new("__FIXME__start", Span::call_site());
     fake_rule = Rule {
         rhs: vec![],
-        rhs_span: proc_macro::Span::def_site(),
+        rhs_span: proc_macro::Span::call_site(),
         action: quote!(),
         exclusions: BTreeSet::new(),
         exclude_eof: false,
         priority: -1,
     };
     rules.insert(
-        fake_start,
-        vec![
-            Rhs {
-                syms: vec![Nonterminal(start)],
-                act: &fake_rule,
-            },
-        ],
+        fake_start.clone(),
+        vec![Rhs {
+            syms: vec![Nonterminal(start)],
+            act: &fake_rule,
+        }],
     );
     let grammar = Grammar {
         rules: rules,
@@ -622,24 +624,26 @@ pub fn parser(input: TokenStream) -> TokenStream {
         parser.name,
         |ident| quote!(#ident { .. }),
         |lhs, act, syms| {
-            let mut expr = act.action.clone().into_tokens();
+            let mut expr = act.action.clone().into_token_stream();
             let mut args = vec![];
             debug_assert_eq!(syms.len(), act.rhs.len());
             for (i, (sym, x)) in syms.iter().zip(&act.rhs).enumerate() {
                 args.push(match *x {
-                    RuleRhsItem::SymbolPat(_, ref pat) => Some(pat.clone().into_tokens()),
+                    RuleRhsItem::SymbolPat(_, ref pat) => Some(pat.clone().into_token_stream()),
                     RuleRhsItem::Destructure(ref ident, sp, ref pats) => {
-                        let id = Ident::from(format!("s{}", i));
+                        let id = Ident::new(&format!("s{}", i), Span::call_site());
                         let terminal = match *sym {
                             Nonterminal(_) => {
                                 sp.unstable()
                                     .error("can't bind enum case to a nonterminal")
                                     .emit();
-                                Ident::from("__error")
+                                Ident::new("__error", Span::call_site())
                             }
-                            Terminal(x) => x,
+                            Terminal(ref x) => {
+                                debug_assert_eq!(*x, ident.to_string());
+                                x.clone()
+                            },
                         };
-                        debug_assert_eq!(terminal, ident);
                         expr = quote_spanned!(
                                 act.rhs_span.into() =>
                                 {
@@ -649,7 +653,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
                                         _ => unreachable!(),
                                     }
                                 });
-                        Some(id.into_tokens())
+                        Some(id.into_token_stream())
                     }
                     RuleRhsItem::Symbol(_) => None,
                 });
@@ -657,7 +661,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
 
             // XXX: should be a cargo feature (?)
             if false {
-                let rule_str = pretty_rule(*lhs, syms);
+                let rule_str = pretty_rule(lhs.clone(), syms);
                 expr = quote!({
                         println!("reduce by {}", #rule_str);
                         #expr
@@ -712,7 +716,6 @@ token: {}",
                     .emit();
             }
         };
-        Tokens::new()
+        TokenStream::empty()
     })
-        .into()
 }

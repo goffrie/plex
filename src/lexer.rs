@@ -8,16 +8,14 @@ use syn;
 use syn::buffer::Cursor;
 use syn::synom::{PResult, Synom};
 use syn::{Expr, Ident, Lifetime, LitStr, Type, Visibility};
-use quote::Tokens;
-use proc_macro2::{Delimiter, Span};
-use proc_macro::TokenStream;
+use proc_macro2::{Delimiter, Span, TokenStream};
 
 fn dfa_fn<T>(
     dfa: &Dfa<char, T>,
     state_enum: Ident,
-    state_paths: &[Tokens],
+    state_paths: &[TokenStream],
     fn_name: Ident,
-) -> Tokens {
+) -> TokenStream {
     let mut arms = vec![];
     for (tr, state_name) in dfa.states.iter().zip(state_paths.iter().cloned()) {
         let mut subarms = vec![];
@@ -152,7 +150,7 @@ pub fn lexer(input: TokenStream) -> TokenStream {
         lifetime,
         return_type,
         rules,
-    } = syn::parse(input).unwrap_or_else(|e| {
+    } = syn::parse(input.into()).unwrap_or_else(|e| {
         panic!("parse error: {:?}", e);
     });
 
@@ -195,13 +193,13 @@ pub fn lexer(input: TokenStream) -> TokenStream {
 
     // Construct "human-readable" names for each of the DFA states.
     // This is purely to make the generated code nicer.
-    let mut names: Vec<Ident> = dfa_make_names(&dfa).into_iter().map(Ident::from).collect();
+    let mut names: Vec<Ident> = dfa_make_names(&dfa).into_iter().map(|n| Ident::new(&n, Span::call_site())).collect();
     // If we've identified an error state, give it the special name "Error".
     if let Some(ix) = error_state_ix {
-        names[ix] = Ident::from("Error");
+        names[ix] = Ident::new("Error", Span::call_site());
     }
     // The full paths to each of the state names (e.g. `State::Error`).
-    let state_paths: Vec<Tokens> = names.iter().map(|name| quote!(State::#name)).collect();
+    let state_paths: Vec<TokenStream> = names.iter().map(|name| quote!(State::#name)).collect();
 
     let initial_state = state_paths[0].clone();
     let error_state = error_state_ix.map(|ix| state_paths[ix].clone());
@@ -209,9 +207,9 @@ pub fn lexer(input: TokenStream) -> TokenStream {
     // Construct the actual DFA transition function, which, given a `State` and the next character, returns the next `State`.
     let transition_fn = dfa_fn(
         &dfa,
-        Ident::from("State"),
+        Ident::new("State", Span::call_site()),
         &state_paths,
-        Ident::from("transition"),
+        Ident::new("transition", Span::call_site()),
     );
 
     let accepting_fn = {
@@ -243,6 +241,7 @@ pub fn lexer(input: TokenStream) -> TokenStream {
             _ => unreachable!()
         })
     };
+    let lifetime = &lifetime; // jank
     quote!(
         #vis fn #name #(<#lifetime>)* (input: &#(#lifetime)* str) -> Option<(#return_type, &#(#lifetime)* str)> {
             #[derive(Copy, Clone)]
@@ -283,5 +282,5 @@ pub fn lexer(input: TokenStream) -> TokenStream {
                 None
             }
         }
-    ).into()
+    )
 }

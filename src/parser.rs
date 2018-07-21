@@ -564,7 +564,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
             .unstable()
             .error("at least one nonterminal is required")
             .emit();
-        return TokenStream::empty();
+        return TokenStream::new();
     };
     let mut rules: BTreeMap<Ident, Vec<_>> = rules
         .into_iter()
@@ -716,6 +716,6 @@ token: {}",
                     .emit();
             }
         };
-        TokenStream::empty()
+        TokenStream::new()
     })
 }

@@ -14,7 +14,7 @@ keywords = ["tokenizer", "scanner", "lexer", "parser", "generator"]
 [lib]
 
 name = "plex"
-crate-type = ["proc-macro"]
+proc-macro = true
 
 [dependencies]
 

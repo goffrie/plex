@@ -20,7 +20,7 @@ You can find a demo in `examples/demo.rs`. Note that nightly Rust is required.
 First, include `plex`.
 
 ```rust
-#![feature(use_extern_macros)]
+#![feature(proc_macro_hygiene)]
 extern crate plex;
 use plex::{lexer, parser};
 ```

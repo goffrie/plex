@@ -7,7 +7,7 @@ authors = ["Geoffry Song <goffrie@gmail.com>"]
 description = "A syntax extension for writing lexers and parsers."
 homepage = "https://github.com/goffrie/plex"
 repository = "https://github.com/goffrie/plex"
-documentation = "http://goffrie.github.io/plex"
+documentation = "https://docs.rs/plex"
 license = "MIT OR Apache-2.0"
 keywords = ["tokenizer", "scanner", "lexer", "parser", "generator"]
 

@@ -27,34 +27,34 @@ mod lexer {
     }
 
     lexer! {
-        fn next_token(text: 'a) -> (Token, &'a str);
+        fn next_token(text: 'a) -> Token;
 
-        r#"[ \t\r\n]+"# => (Token::Whitespace, text),
+        r#"[ \t\r\n]+"# => Token::Whitespace,
         // "C-style" comments (/* .. */) - can't contain "*/"
-        r#"/[*](~(.*[*]/.*))[*]/"# => (Token::Comment, text),
+        r#"/[*](~(.*[*]/.*))[*]/"# => Token::Comment,
         // "C++-style" comments (// ...)
-        r#"//[^\n]*"# => (Token::Comment, text),
+        r#"//[^\n]*"# => Token::Comment,
 
-        r#"print"# => (Token::Print, text),
+        r#"print"# => Token::Print,
 
         r#"[0-9]+"# => {
-            (if let Ok(i) = text.parse() {
+            if let Ok(i) = text.parse() {
                 Token::Integer(i)
             } else {
                 panic!("integer {} is out of range", text)
-            }, text)
+            }
         }
 
-        r#"[a-zA-Z_][a-zA-Z0-9_]*"# => (Token::Ident(text.to_owned()), text),
+        r#"[a-zA-Z_][a-zA-Z0-9_]*"# => Token::Ident(text.to_owned()),
 
-        r#"="# => (Token::Equals, text),
-        r#"\+"# => (Token::Plus, text),
-        r#"-"# => (Token::Minus, text),
-        r#"\*"# => (Token::Star, text),
-        r#"/"# => (Token::Slash, text),
-        r#"\("# => (Token::LParen, text),
-        r#"\)"# => (Token::RParen, text),
-        r#";"# => (Token::Semi, text),
+        r#"="# => Token::Equals,
+        r#"\+"# => Token::Plus,
+        r#"-"# => Token::Minus,
+        r#"\*"# => Token::Star,
+        r#"/"# => Token::Slash,
+        r#"\("# => Token::LParen,
+        r#"\)"# => Token::RParen,
+        r#";"# => Token::Semi,
 
         r#"."# => panic!("unexpected character: {}", text),
     }
@@ -79,30 +79,24 @@ mod lexer {
         pub hi: usize,
     }
 
-    fn span_in(s: &str, t: &str) -> Span {
-        let lo = s.as_ptr() as usize - t.as_ptr() as usize;
-        Span {
-            lo: lo,
-            hi: lo + s.len(),
-        }
-    }
-
     impl<'a> Iterator for Lexer<'a> {
         type Item = (Token, Span);
         fn next(&mut self) -> Option<(Token, Span)> {
             loop {
-                let tok = if let Some((tok, new_remaining)) = next_token(self.remaining) {
+                let (tok, span) = if let Some((tok, new_remaining)) = next_token(self.remaining) {
+                    let lo = self.original.len() - self.remaining.len();
+                    let hi = self.original.len() - new_remaining.len();
                     self.remaining = new_remaining;
-                    tok
+                    (tok, Span { lo, hi })
                 } else {
                     return None;
                 };
                 match tok {
-                    (Token::Whitespace, _) | (Token::Comment, _) => {
+                    Token::Whitespace | Token::Comment => {
                         continue;
                     }
-                    (tok, span) => {
-                        return Some((tok, span_in(span, self.original)));
+                    tok => {
+                        return Some((tok, span));
                     }
                 }
             }

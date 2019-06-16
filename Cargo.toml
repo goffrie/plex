@@ -26,6 +26,6 @@ parser = ["lalr"]
 
 lalr = { version = "0.0.2", optional = true }
 redfa = { version = "0.0.2", optional = true }
-syn = { version = "0.14.0", features = ["extra-traits", "full"] }
+syn = { version = "0.15.36", features = ["extra-traits", "full"] }
 proc-macro2 = { version = "0.4.3", features = ["nightly"] }
 quote = "0.6.0"

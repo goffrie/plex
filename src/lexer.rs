@@ -1,14 +1,13 @@
-use std::collections::{BTreeSet, VecDeque};
 use std::char;
+use std::collections::{BTreeSet, VecDeque};
 
-use redfa::Dfa;
 use redfa::regex::Regex;
+use redfa::Dfa;
 
+use proc_macro2::{Span, TokenStream};
 use syn;
-use syn::buffer::Cursor;
-use syn::synom::{PResult, Synom};
-use syn::{Expr, Ident, Lifetime, LitStr, Type, Visibility};
-use proc_macro2::{Delimiter, Span, TokenStream};
+use syn::parse::{Parse, ParseStream};
+use syn::{token, Expr, Ident, Lifetime, LitStr, Type, Visibility};
 
 fn dfa_fn<T>(
     dfa: &Dfa<char, T>,
@@ -88,29 +87,26 @@ struct Rule {
     expr: Expr,
 }
 
-fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
+fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
     let mut rules = vec![];
-    while !input.eof() {
-        // FIXME: Make some nicer error messages, preferably when syn supports it.
-        let (pattern, input_) = <LitStr as Synom>::parse(input)?;
-        let (_, input_) = <Token![=>] as Synom>::parse(input_)?;
+    while !input.is_empty() {
+        // FIXME: Make some nicer error messages.
+        let pattern = input.parse()?;
+        input.parse::<Token![=>]>()?;
         // Like in a `match` expression, braced block doesn't require a comma before the next rule.
-        let optional_comma = input_.group(Delimiter::Brace).is_some();
-        let (expr, input_) = <Expr as Synom>::parse(input_)?;
+        let optional_comma = input.peek(token::Brace);
+        let expr = input.parse()?;
         rules.push(Rule { pattern, expr });
-        match <Token![,] as Synom>::parse(input_) {
-            Ok((_, input_)) => {
-                input = input_;
-            }
+        match input.parse::<Token![,]>() {
+            Ok(_) => {}
             Err(e) => {
-                input = input_;
-                if !input.eof() && !optional_comma {
+                if !input.is_empty() && !optional_comma {
                     return Err(e);
                 }
             }
         }
     }
-    Ok((rules, input))
+    Ok(rules)
 }
 
 struct Lexer {
@@ -122,27 +118,43 @@ struct Lexer {
     rules: Vec<Rule>,
 }
 
-impl Synom for Lexer {
-    named!(parse -> Self, do_parse!(
-        vis: syn!(Visibility) >>
-        keyword!(fn) >>
-        name: syn!(Ident) >>
-        input_and_lifetime: parens!(tuple!(
-            syn!(Ident),
-            option!(do_parse!(punct!(:) >> lt: syn!(Lifetime) >> (lt)))
-        )) >>
-        punct!(->) >>
-        return_type: syn!(Type) >>
-        punct!(;) >>
-        rules: call!(parse_rules) >>
-        ({
-            let (_, (input, lifetime)) = input_and_lifetime;
-            Lexer { vis, name, input, lifetime, return_type, rules }
+impl Parse for Lexer {
+    fn parse(input: ParseStream) -> syn::Result<Lexer> {
+        let lifetime;
+        Ok(Lexer {
+            vis: input.parse()?,
+            name: {
+                input.parse::<Token![fn]>()?;
+                input.parse()?
+            },
+            input: {
+                let inner;
+                parenthesized!(inner in input);
+                let lexer_input = inner.parse()?;
+                if !inner.is_empty() {
+                    inner.parse::<Token![:]>()?;
+                    lifetime = Some(inner.parse()?);
+                    if !inner.is_empty() {
+                        return Err(inner.error("unexpected token after input lifetime"));
+                    }
+                } else {
+                    lifetime = None;
+                }
+                lexer_input
+            },
+            lifetime,
+            return_type: {
+                input.parse::<Token![->]>()?;
+                let t = input.parse()?;
+                input.parse::<Token![;]>()?;
+                t
+            },
+            rules: parse_rules(input)?,
         })
-    ));
+    }
 }
 
-pub fn lexer(input: TokenStream) -> TokenStream {
+pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let Lexer {
         vis,
         name,
@@ -150,9 +162,7 @@ pub fn lexer(input: TokenStream) -> TokenStream {
         lifetime,
         return_type,
         rules,
-    } = syn::parse(input.into()).unwrap_or_else(|e| {
-        panic!("parse error: {:?}", e);
-    });
+    } = parse_macro_input!(input as Lexer);
 
     let (re_vec, actions): (Vec<Regex<_>>, Vec<Expr>) = rules
         .into_iter()
@@ -193,7 +203,10 @@ pub fn lexer(input: TokenStream) -> TokenStream {
 
     // Construct "human-readable" names for each of the DFA states.
     // This is purely to make the generated code nicer.
-    let mut names: Vec<Ident> = dfa_make_names(&dfa).into_iter().map(|n| Ident::new(&n, Span::call_site())).collect();
+    let mut names: Vec<Ident> = dfa_make_names(&dfa)
+        .into_iter()
+        .map(|n| Ident::new(&n, Span::call_site()))
+        .collect();
     // If we've identified an error state, give it the special name "Error".
     if let Some(ix) = error_state_ix {
         names[ix] = Ident::new("Error", Span::call_site());
@@ -213,7 +226,8 @@ pub fn lexer(input: TokenStream) -> TokenStream {
     );
 
     let accepting_fn = {
-        let arms = dfa.states
+        let arms = dfa
+            .states
             .iter()
             .map(|state| state.value)
             .zip(&state_paths)
@@ -282,5 +296,5 @@ pub fn lexer(input: TokenStream) -> TokenStream {
                 None
             }
         }
-    )
+    ).into()
 }

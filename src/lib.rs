@@ -8,8 +8,8 @@
 
 #[cfg(feature = "parser")]
 extern crate lalr;
-extern crate proc_macro2;
 extern crate proc_macro;
+extern crate proc_macro2;
 #[macro_use]
 extern crate quote;
 #[cfg(feature = "lexer")]
@@ -28,12 +28,12 @@ use proc_macro::TokenStream;
 #[cfg(feature = "lexer")]
 #[proc_macro]
 pub fn lexer(tok: TokenStream) -> TokenStream {
-    lexer::lexer(tok.into()).into()
+    lexer::lexer(tok)
 }
 
 /// Defines a parser.
 #[cfg(feature = "parser")]
 #[proc_macro]
 pub fn parser(tok: TokenStream) -> TokenStream {
-    parser::parser(tok.into()).into()
+    parser::parser(tok)
 }

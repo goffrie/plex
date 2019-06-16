@@ -5,11 +5,11 @@ use std::fmt::{self, Write};
 use lalr::*;
 
 use proc_macro;
-use proc_macro2::{Delimiter, Span, TokenStream};
+use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
-use syn::buffer::Cursor;
-use syn::synom::{PResult, Synom};
-use syn::{self, Attribute, Block, Expr, Ident, Meta, NestedMeta, Pat, Type, Visibility};
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::{self, token, Attribute, Block, Expr, Ident, Meta, NestedMeta, Pat, Type, Visibility};
 
 /// Return the most frequent item in the given iterator, or None if it is empty.
 /// Picks an arbitrary item in case of a tie.
@@ -101,7 +101,9 @@ where
             #body
         })
     } else {
-        quote!(fn range(_a: (), _b: ()) {})
+        quote!(
+            fn range(_a: (), _b: ()) {}
+        )
     });
     stmts.push(
         quote!(fn range_array(x: &[Option<#span_ty>]) -> Option<#span_ty> {
@@ -159,7 +161,8 @@ where
                 // Make the current_span available to the user by exposing it through a macro whose name is unhygienic.
                 let current_span_ident = quote_spanned!(rhs_span => current_span);
                 let span_macro = quote!(
-                    #[allow(unused_macros)] macro_rules! span {
+                    #[allow(unused_macros)]
+                    macro_rules! span {
                         () => { #current_span_ident.unwrap() }
                     }
                 );
@@ -314,7 +317,12 @@ where
 enum RuleRhsItem {
     Symbol(Ident),
     SymbolPat(Ident, Pat),
-    Destructure(Ident, Span, Vec<Pat>),
+    Destructure(
+        Ident,
+        /// The span of the parens surrounding the patterns.
+        Span,
+        Vec<Pat>,
+    ),
 }
 
 impl RuleRhsItem {
@@ -330,6 +338,7 @@ impl RuleRhsItem {
 #[derive(Debug)]
 struct Rule {
     rhs: Vec<RuleRhsItem>,
+    // `None` if `rhs` is empty
     rhs_span: proc_macro::Span,
     action: TokenStream,
     exclusions: BTreeSet<Ident>,
@@ -337,18 +346,16 @@ struct Rule {
     priority: i32,
 }
 
-fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
+fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
     let mut rules = vec![];
-    while !input.eof() {
-        // FIXME: Make some nicer error messages, preferably when syn supports it.
+    while !input.is_empty() {
+        // FIXME: Make some nicer error messages.
         let mut exclusions = BTreeSet::new();
         let mut exclude_eof = false;
         let mut priority = 0;
-        let (attrs, input_) = many0!(input, call!(Attribute::parse_outer))?;
-        input = input_;
+        let attrs = Attribute::parse_outer(input)?;
         for attr in attrs {
-            let meta = attr.interpret_meta().unwrap();
-            match meta {
+            match attr.parse_meta()? {
                 Meta::List(ref list) if list.ident == "no_reduce" => {
                     for token in &list.nested {
                         if let NestedMeta::Meta(Meta::Word(ref ident)) = *token {
@@ -360,7 +367,7 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
                         } else {
                             // FIXME bad span here
                             list.paren_token
-                                .0
+                                .span
                                 .unstable()
                                 .error("invalid syntax: no_reduce list includes a non-token")
                                 .emit();
@@ -370,7 +377,7 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
                 Meta::Word(ref ident) if ident == "overriding" => {
                     priority = 1;
                 }
-                _ => {
+                meta => {
                     // FIXME non-ideal span
                     meta.name()
                         .span()
@@ -381,48 +388,49 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
             }
         }
         let mut rhs = vec![];
-        let sp_lo = input.span();
-        let mut sp_hi = sp_lo;
-        while let Ok((ident, input_)) = Ident::parse(input) {
-            input = input_;
-            rhs.push(
-                if let Some((inner, span, input_)) = input.group(Delimiter::Bracket) {
-                    sp_hi = span;
-                    input = input_;
-                    let (pat, inner_) = Pat::parse(inner)?;
-                    input_end!(inner_,)?;
-                    RuleRhsItem::SymbolPat(ident, pat)
-                } else if let Some((mut inner, span, input_)) = input.group(Delimiter::Parenthesis)
-                {
-                    sp_hi = span;
-                    input = input_;
-                    let mut pats = vec![];
-                    while !inner.eof() {
-                        let (pat, inner_) = Pat::parse(inner)?;
-                        pats.push(pat);
-                        inner = inner_;
-                        if !inner.eof() {
-                            let (_, inner_) = <Token![,]>::parse(inner)?;
-                            inner = inner_;
-                        }
-                    }
-                    RuleRhsItem::Destructure(ident, span, pats)
-                } else {
-                    sp_hi = ident.span();
-                    RuleRhsItem::Symbol(ident)
-                },
-            );
+        let mut sp_lo = None;
+        let mut sp_hi = None;
+        while !input.peek(Token![=>]) {
+            let ident: Ident = input.parse()?;
+            if sp_lo.is_none() {
+                sp_lo = Some(ident.span());
+            }
+            rhs.push(if input.peek(token::Bracket) {
+                let inner;
+                let bracket = bracketed!(inner in input);
+                sp_hi = Some(bracket.span);
+                let pat = inner.parse()?;
+                if !inner.is_empty() {
+                    return Err(inner.error("unexpected token after pattern"));
+                }
+                RuleRhsItem::SymbolPat(ident, pat)
+            } else if input.peek(token::Paren) {
+                let inner;
+                let paren = parenthesized!(inner in input);
+                sp_hi = Some(paren.span);
+                let pats = Punctuated::<Pat, Token![,]>::parse_terminated(&inner)?;
+                RuleRhsItem::Destructure(
+                    ident,
+                    paren.span,
+                    pats.into_pairs().map(|p| p.into_value()).collect(),
+                )
+            } else {
+                sp_hi = Some(ident.span());
+                RuleRhsItem::Symbol(ident)
+            });
         }
-        let rhs_span = sp_lo
+        let arrow = input.parse::<Token![=>]>()?;
+        let arrow_span = arrow.spans[0]
             .unstable()
-            .join(sp_hi.unstable())
+            .join(arrow.spans[1].unstable())
+            .expect("fat arrow has invalid spans");
+        let rhs_span = sp_lo
+            .map_or(arrow_span, Span::unstable)
+            .join(sp_hi.map_or(arrow_span, Span::unstable))
             .expect("FIXME: you did something bad");
-        let (_, input_) = <Token![=>]>::parse(input)?;
-        input = input_;
         // Like in a `match` expression, braced block doesn't require a comma before the next rule.
-        let optional_comma = input.group(Delimiter::Brace).is_some();
-        let (action, input_) = Expr::parse(input)?;
-        input = input_;
+        let optional_comma = input.peek(token::Brace);
+        let action: Expr = input.parse()?;
         rules.push(Rule {
             rhs,
             rhs_span,
@@ -432,17 +440,15 @@ fn parse_rules(mut input: Cursor) -> PResult<Vec<Rule>> {
             priority,
         });
         match <Token![,]>::parse(input) {
-            Ok((_, input_)) => {
-                input = input_;
-            }
+            Ok(_) => {}
             Err(e) => {
-                if !input.eof() && !optional_comma {
+                if !input.is_empty() && !optional_comma {
                     return Err(e);
                 }
             }
         }
     }
-    Ok((rules, input))
+    Ok(rules)
 }
 
 struct RuleSet {
@@ -451,17 +457,21 @@ struct RuleSet {
     rules: Vec<Rule>,
 }
 
-impl Synom for RuleSet {
-    named!(parse -> Self, do_parse!(
-        lhs: syn!(Ident) >>
-        punct!(:) >>
-        return_ty: syn!(Type) >>
-        rules: braces!(call!(parse_rules)) >>
-        ({
-            let (_, rules) = rules;
-            RuleSet { lhs, return_ty, rules }
+impl Parse for RuleSet {
+    fn parse(input: ParseStream) -> syn::Result<RuleSet> {
+        Ok(RuleSet {
+            lhs: input.parse()?,
+            return_ty: {
+                input.parse::<Token![:]>()?;
+                input.parse()?
+            },
+            rules: {
+                let rule_content;
+                braced!(rule_content in input);
+                parse_rules(&rule_content)?
+            },
         })
-    ));
+    }
 }
 
 struct Parser {
@@ -473,31 +483,53 @@ struct Parser {
     rule_sets: Vec<RuleSet>,
 }
 
-impl Synom for Parser {
-    named!(parse -> Self, do_parse!(
-        vis: syn!(Visibility) >>
-        keyword!(fn) >>
-        name: syn!(Ident) >>
-        token_and_span: parens!(tuple!(
-            syn!(Type),
-            punct!(,),
-            syn!(Type)
-        )) >>
-        punct!(;) >>
-        range_fn: option!(do_parse!(
-            args: parens!(tuple!(syn!(Ident), punct!(,), syn!(Ident))) >>
-            body: syn!(Block) >>
-            ({
-                let (_, (a, _, b)) = args;
-                (a, b, body)
-            })
-        )) >>
-        rule_sets: many0!(syn!(RuleSet)) >>
-        ({
-            let (_, (token_ty, _, span_ty)) = token_and_span;
-            Parser { vis, name, token_ty, span_ty, range_fn, rule_sets }
+impl Parse for Parser {
+    fn parse(input: ParseStream) -> syn::Result<Parser> {
+        let span_ty;
+        Ok(Parser {
+            vis: input.parse()?,
+            name: {
+                input.parse::<Token![fn]>()?;
+                input.parse()?
+            },
+            token_ty: {
+                let inner;
+                parenthesized!(inner in input);
+                let token = inner.parse()?;
+                inner.parse::<Token![,]>()?;
+                span_ty = inner.parse()?;
+                if !inner.is_empty() {
+                    return Err(inner.error("unexpected token after span type"));
+                }
+                input.parse::<Token![;]>()?;
+                token
+            },
+            span_ty,
+            range_fn: {
+                if input.peek(token::Paren) {
+                    let inner;
+                    parenthesized!(inner in input);
+                    let a = inner.parse()?;
+                    inner.parse::<Token![,]>()?;
+                    let b = inner.parse()?;
+                    if !inner.is_empty() {
+                        return Err(inner.error("unexpected token after second range"));
+                    }
+                    let body = input.parse::<Block>()?;
+                    Some((a, b, body))
+                } else {
+                    None
+                }
+            },
+            rule_sets: {
+                let mut r = vec![];
+                while !input.is_empty() {
+                    r.push(input.parse()?);
+                }
+                r
+            },
         })
-    ));
+    }
 }
 
 fn pretty_rule(lhs: Ident, syms: &[Symbol<Ident, Ident>]) -> String {
@@ -531,8 +563,8 @@ fn pretty(x: &ItemSet<Ident, Ident, &Rule>, pad: &str) -> String {
     r
 }
 
-pub fn parser(input: TokenStream) -> TokenStream {
-    let parser: Parser = syn::parse(input.into()).expect("parse error");
+pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let parser = parse_macro_input!(input as Parser);
     let fake_rule; // N.B. must go before `rules` to appease dropck
     let mut rules = BTreeMap::new();
     let mut types = BTreeMap::new();
@@ -564,7 +596,7 @@ pub fn parser(input: TokenStream) -> TokenStream {
             .unstable()
             .error("at least one nonterminal is required")
             .emit();
-        return TokenStream::new();
+        return proc_macro::TokenStream::new();
     };
     let mut rules: BTreeMap<Ident, Vec<_>> = rules
         .into_iter()
@@ -642,17 +674,16 @@ pub fn parser(input: TokenStream) -> TokenStream {
                             Terminal(ref x) => {
                                 debug_assert_eq!(*x, ident.to_string());
                                 x.clone()
-                            },
+                            }
                         };
-                        expr = quote_spanned!(
-                                act.rhs_span.into() =>
-                                {
-                                    // force a by-move capture
-                                    match {#id} {
-                                        #terminal(#(#pats),*) => #expr,
-                                        _ => unreachable!(),
-                                    }
-                                });
+                        expr = quote_spanned!(act.rhs_span.into() =>
+                        {
+                            // force a by-move capture
+                            match {#id} {
+                                #terminal(#(#pats),*) => #expr,
+                                _ => unreachable!(),
+                            }
+                        });
                         Some(id.into_token_stream())
                     }
                     RuleRhsItem::Symbol(_) => None,
@@ -663,9 +694,9 @@ pub fn parser(input: TokenStream) -> TokenStream {
             if false {
                 let rule_str = pretty_rule(lhs.clone(), syms);
                 expr = quote!({
-                        println!("reduce by {}", #rule_str);
-                        #expr
-                    });
+                    println!("reduce by {}", #rule_str);
+                    #expr
+                });
             }
 
             (expr, args, act.rhs_span.into())
@@ -675,7 +706,8 @@ pub fn parser(input: TokenStream) -> TokenStream {
             None => !rhs.act.exclude_eof,
         },
         |rhs, _| rhs.act.priority,
-    ).unwrap_or_else(|conflict| {
+    )
+    .unwrap_or_else(|conflict| {
         match conflict {
             LR1Conflict::ReduceReduce {
                 state,
@@ -718,4 +750,5 @@ token: {}",
         };
         TokenStream::new()
     })
+    .into()
 }

@@ -66,7 +66,10 @@ mod lexer {
 
     impl<'a> Lexer<'a> {
         pub fn new(s: &'a str) -> Lexer<'a> {
-            Lexer { original: s, remaining: s }
+            Lexer {
+                original: s,
+                remaining: s,
+            }
         }
     }
 
@@ -92,7 +95,7 @@ mod lexer {
                     self.remaining = new_remaining;
                     tok
                 } else {
-                    return None
+                    return None;
                 };
                 match tok {
                     (Token::Whitespace, _) | (Token::Comment, _) => {
@@ -112,7 +115,7 @@ mod ast {
 
     #[derive(Debug)]
     pub struct Program {
-        pub stmts: Vec<Expr>
+        pub stmts: Vec<Expr>,
     }
 
     #[derive(Debug)]
@@ -212,7 +215,9 @@ mod parser {
         }
     }
 
-    pub fn parse<I: Iterator<Item=(Token, Span)>>(i: I) -> Result<Program, (Option<(Token, Span)>, &'static str)> {
+    pub fn parse<I: Iterator<Item = (Token, Span)>>(
+        i: I,
+    ) -> Result<Program, (Option<(Token, Span)>, &'static str)> {
         parse_(i)
     }
 }
@@ -253,8 +258,7 @@ mod interp {
 fn main() {
     let mut s = String::new();
     std::io::stdin().read_to_string(&mut s).unwrap();
-    let lexer = lexer::Lexer::new(&s)
-        .inspect(|tok| eprintln!("tok: {:?}", tok));
+    let lexer = lexer::Lexer::new(&s).inspect(|tok| eprintln!("tok: {:?}", tok));
     let program = parser::parse(lexer).unwrap();
     interp::interp(&program);
 }

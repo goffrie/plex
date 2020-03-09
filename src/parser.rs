@@ -228,7 +228,7 @@ where
         }
     }
     stmts.push(quote!(
-        let mut stack = Vec::new();
+        let mut stack: Vec<Box<#any_ty>> = Vec::new();
         let mut span_stack = Vec::new();
         let mut state_stack = Vec::new();
         let mut state: u32 = 0;

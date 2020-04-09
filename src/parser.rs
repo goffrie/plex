@@ -9,6 +9,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{self, token, Attribute, Block, Expr, Ident, Meta, NestedMeta, Pat, Type, Visibility};
 
 /// Return the most frequent item in the given iterator, or None if it is empty.
@@ -356,9 +357,11 @@ fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
         let attrs = Attribute::parse_outer(input)?;
         for attr in attrs {
             match attr.parse_meta()? {
-                Meta::List(ref list) if list.ident == "no_reduce" => {
+                Meta::List(ref list) if list.path.get_ident().unwrap() == "no_reduce" => {
                     for token in &list.nested {
-                        if let NestedMeta::Meta(Meta::Word(ref ident)) = *token {
+                        if let NestedMeta::Meta(Meta::NameValue(ref nval)) = *token {
+                            let ident = nval.path.get_ident().unwrap();
+
                             if ident == "EOF" {
                                 exclude_eof = true;
                             } else {
@@ -374,12 +377,12 @@ fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
                         }
                     }
                 }
-                Meta::Word(ref ident) if ident == "overriding" => {
+                Meta::NameValue(ref nval) if nval.path.get_ident().unwrap() == "overriding" => {
                     priority = 1;
                 }
                 meta => {
                     // FIXME non-ideal span
-                    meta.name()
+                    meta.path()
                         .span()
                         .unstable()
                         .error("unknown attribute")

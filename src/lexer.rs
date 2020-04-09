@@ -255,9 +255,15 @@ pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             _ => unreachable!()
         })
     };
-    let lifetime = &lifetime; // jank
+
+    let l1 = lifetime.iter();
+    let l2 = lifetime.iter();
+    let l3 = lifetime.iter();
+
+    let error_state = error_state.iter();
+
     quote!(
-        #vis fn #name #(<#lifetime>)* (input: &#(#lifetime)* str) -> Option<(#return_type, &#(#lifetime)* str)> {
+        #vis fn #name #(<#l1>)* (input: &#(#l2)* str) -> Option<(#return_type, &#(#l3)* str)> {
             #[derive(Copy, Clone)]
             #[allow(non_camel_case_types)]
             enum State {

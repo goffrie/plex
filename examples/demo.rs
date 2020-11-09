@@ -105,7 +105,7 @@ mod lexer {
 }
 
 mod ast {
-    use lexer::Span;
+    use crate::lexer::Span;
 
     #[derive(Debug)]
     pub struct Program {
@@ -132,10 +132,10 @@ mod ast {
 }
 
 mod parser {
-    use ast::*;
-    use lexer::Token::*;
-    use lexer::*;
-    use plex::parser;
+    use crate::ast::*;
+    use crate::lexer::Token::*;
+    use crate::lexer::*;
+    use crate::plex::parser;
     parser! {
         fn parse_(Token, Span);
 
@@ -217,7 +217,7 @@ mod parser {
 }
 
 mod interp {
-    use ast::*;
+    use crate::ast::*;
     use std::collections::HashMap;
 
     pub fn interp<'a>(p: &'a Program) {
@@ -227,7 +227,7 @@ mod interp {
         }
     }
     fn interp_expr<'a>(env: &mut HashMap<&'a str, i64>, expr: &'a Expr) -> i64 {
-        use ast::Expr_::*;
+        use crate::ast::Expr_::*;
         match expr.node {
             Add(ref a, ref b) => interp_expr(env, a) + interp_expr(env, b),
             Sub(ref a, ref b) => interp_expr(env, a) - interp_expr(env, b),

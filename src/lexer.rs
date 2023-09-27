@@ -8,7 +8,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parenthesized, parse_macro_input, token, Expr, Ident, Lifetime, LitStr, Token, Type, Visibility,
+    parenthesized, parse_macro_input, token, Error, Expr, Ident, Lifetime, LitStr, Token, Type,
+    Visibility,
 };
 
 fn dfa_fn<T>(
@@ -166,26 +167,25 @@ pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         rules,
     } = parse_macro_input!(input as Lexer);
 
+    let mut errors = vec![];
     let (re_vec, actions): (Vec<Regex<_>>, Vec<Expr>) = rules
         .into_iter()
         .map(|Rule { pattern, expr }| {
             let re = match pattern.value().parse() {
                 Ok(r) => r,
                 Err(e) => {
-                    pattern
-                        .span()
-                        .unstable()
-                        .error(format!("invalid regular expression: {}", e))
-                        .emit();
+                    errors.push(Error::new_spanned(
+                        &pattern,
+                        format!("invalid regular expression: {}", e),
+                    ));
                     Regex::Null // dummy
                 }
             };
             if re.nullable() {
-                pattern
-                    .span()
-                    .unstable()
-                    .error("token must not match the empty string")
-                    .emit();
+                errors.push(Error::new_spanned(
+                    &pattern,
+                    "token must not match the empty string",
+                ));
             }
             (re, expr)
         })
@@ -196,11 +196,12 @@ pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let error_state_ix = dfa.states.iter().enumerate().position(|(ix, state)| {
         state.value.is_none() && state.by_char.is_empty() && state.default as usize == ix
     });
+    // TODO: consider making this opt-out
     if error_state_ix.is_none() {
-        Span::call_site()
-            .unstable()
-            .warning("this DFA has no error state; it will always scan the entire input")
-            .emit();
+        errors.push(Error::new(
+            Span::call_site(),
+            "this DFA has no error state; it will always scan the entire input",
+        ));
     }
 
     // Construct "human-readable" names for each of the DFA states.
@@ -263,8 +264,10 @@ pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let l3 = lifetime.iter();
 
     let error_state = error_state.iter();
+    let errors = errors.into_iter().map(|e| e.into_compile_error()).collect::<TokenStream>();
 
     quote!(
+        #errors
         #vis fn #name #(<#l1>)* (input: &#(#l2)* str) -> Option<(#return_type, &#(#l3)* str)> {
             #[derive(Copy, Clone)]
             #[allow(non_camel_case_types)]

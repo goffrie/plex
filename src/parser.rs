@@ -9,9 +9,10 @@ use quote::{quote, quote_spanned, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
+use syn::token::{Bracket, Paren};
 use syn::{
-    self, braced, bracketed, parenthesized, parse_macro_input, token, Attribute, Block, Expr,
-    Ident, Meta, NestedMeta, Pat, Token, Type, Visibility,
+    self, braced, bracketed, parenthesized, parse_macro_input, token, Attribute, Block, Error,
+    Expr, Ident, Meta, Pat, Token, Type, Visibility,
 };
 
 /// Return the most frequent item in the given iterator, or None if it is empty.
@@ -319,20 +320,31 @@ where
 #[derive(Debug)]
 enum RuleRhsItem {
     Symbol(Ident),
-    SymbolPat(Ident, Pat),
-    Destructure(
-        Ident,
-        /// The span of the parens surrounding the patterns.
-        Span,
-        Vec<Pat>,
-    ),
+    SymbolPat(Ident, Bracket, Pat),
+    Destructure(Ident, Paren, Punctuated<Pat, Token![,]>),
+}
+
+impl ToTokens for RuleRhsItem {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            RuleRhsItem::Symbol(ident) => ident.to_tokens(tokens),
+            RuleRhsItem::SymbolPat(ident, bracket, pat) => {
+                ident.to_tokens(tokens);
+                bracket.surround(tokens, |tokens| pat.to_tokens(tokens));
+            }
+            RuleRhsItem::Destructure(ident, paren, pats) => {
+                ident.to_tokens(tokens);
+                paren.surround(tokens, |tokens| pats.to_tokens(tokens));
+            }
+        }
+    }
 }
 
 impl RuleRhsItem {
     fn ident(&self) -> &Ident {
         match *self {
             RuleRhsItem::Symbol(ref ident)
-            | RuleRhsItem::SymbolPat(ref ident, _)
+            | RuleRhsItem::SymbolPat(ref ident, _, _)
             | RuleRhsItem::Destructure(ref ident, _, _) => ident,
         }
     }
@@ -341,12 +353,19 @@ impl RuleRhsItem {
 #[derive(Debug)]
 struct Rule {
     rhs: Vec<RuleRhsItem>,
-    // `None` if `rhs` is empty
-    rhs_span: proc_macro::Span,
+    arrow: Token![=>],
     action: TokenStream,
     exclusions: BTreeSet<Ident>,
     exclude_eof: bool,
     priority: i32,
+}
+
+impl Rule {
+    fn head(&self) -> proc_macro2::TokenStream {
+        let rhs = &self.rhs;
+        let arrow = &self.arrow;
+        quote!(#(#rhs)* #arrow)
+    }
 }
 
 fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
@@ -358,87 +377,60 @@ fn parse_rules(input: ParseStream) -> syn::Result<Vec<Rule>> {
         let mut priority = 0;
         let attrs = Attribute::parse_outer(input)?;
         for attr in attrs {
-            match attr.parse_meta()? {
-                Meta::List(ref list) if list.path.get_ident().unwrap() == "no_reduce" => {
-                    for token in &list.nested {
-                        if let NestedMeta::Meta(Meta::NameValue(ref nval)) = *token {
-                            let ident = nval.path.get_ident().unwrap();
-
+            match attr.meta {
+                Meta::List(_) if attr.path().is_ident("no_reduce") => {
+                    attr.parse_nested_meta(|nested| {
+                        if let Some(ident) = nested.path.get_ident() {
                             if ident == "EOF" {
                                 exclude_eof = true;
                             } else {
                                 exclusions.insert(ident.clone());
                             }
+                            Ok(())
                         } else {
-                            // FIXME bad span here
-                            list.paren_token
-                                .span
-                                .unstable()
-                                .error("invalid syntax: no_reduce list includes a non-token")
-                                .emit();
+                            Err(nested.error("invalid syntax: no_reduce list includes a non-token"))
                         }
-                    }
+                    })?;
                 }
-                Meta::NameValue(ref nval) if nval.path.get_ident().unwrap() == "overriding" => {
+                Meta::Path(_) if attr.path().is_ident("overriding") => {
                     priority = 1;
                 }
-                meta => {
-                    // FIXME non-ideal span
-                    meta.path()
-                        .span()
-                        .unstable()
-                        .error("unknown attribute")
-                        .emit();
+                _ => {
+                    return Err(Error::new_spanned(attr, "unknown attribute"));
                 }
             }
         }
         let mut rhs = vec![];
-        let mut sp_lo = None;
-        let mut sp_hi = None;
         while !input.peek(Token![=>]) {
             let ident: Ident = input.parse()?;
-            if sp_lo.is_none() {
-                sp_lo = Some(ident.span());
-            }
             rhs.push(if input.peek(token::Bracket) {
                 let inner;
                 let bracket = bracketed!(inner in input);
-                sp_hi = Some(bracket.span);
-                let pat = inner.parse()?;
+                let pat = Pat::parse_single(&inner)?;
                 if !inner.is_empty() {
                     return Err(inner.error("unexpected token after pattern"));
                 }
-                RuleRhsItem::SymbolPat(ident, pat)
+                RuleRhsItem::SymbolPat(ident, bracket, pat)
             } else if input.peek(token::Paren) {
                 let inner;
                 let paren = parenthesized!(inner in input);
-                sp_hi = Some(paren.span);
-                let pats = Punctuated::<Pat, Token![,]>::parse_terminated(&inner)?;
+                let pats = inner.parse_terminated(Pat::parse_single, Token![,])?;
                 RuleRhsItem::Destructure(
                     ident,
-                    paren.span,
+                    paren,
                     pats.into_pairs().map(|p| p.into_value()).collect(),
                 )
             } else {
-                sp_hi = Some(ident.span());
                 RuleRhsItem::Symbol(ident)
             });
         }
         let arrow = input.parse::<Token![=>]>()?;
-        let arrow_span = arrow.spans[0]
-            .unstable()
-            .join(arrow.spans[1].unstable())
-            .expect("fat arrow has invalid spans");
-        let rhs_span = sp_lo
-            .map_or(arrow_span, Span::unstable)
-            .join(sp_hi.map_or(arrow_span, Span::unstable))
-            .expect("FIXME: you did something bad");
         // Like in a `match` expression, braced block doesn't require a comma before the next rule.
         let optional_comma = input.peek(token::Brace);
         let action: Expr = input.parse()?;
         rules.push(Rule {
             rhs,
-            rhs_span,
+            arrow,
             action: action.into_token_stream(),
             exclusions,
             exclude_eof,
@@ -574,6 +566,7 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let mut rules = BTreeMap::new();
     let mut types = BTreeMap::new();
     let mut start = None;
+    let mut errors = vec![];
     for rule_set in &parser.rule_sets {
         // parse "LHS: Type {"
         let lhs = &rule_set.lhs;
@@ -582,11 +575,11 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
         match rules.entry(lhs.clone()) {
             Entry::Occupied(ent) => {
-                lhs.span()
-                    .unstable()
-                    .error("duplicate nonterminal")
-                    .span_note(ent.key().span().unstable(), "first definition here")
-                    .emit();
+                errors.push(Error::new_spanned(lhs, "duplicate nonterminal"));
+                errors.push(Error::new_spanned(
+                    ent.key(),
+                    "the first definition is here",
+                ));
             }
             Entry::Vacant(ent) => {
                 types.insert(lhs.clone(), rule_set.return_ty.clone());
@@ -597,11 +590,9 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let start = if let Some(start) = start {
         start
     } else {
-        Span::call_site()
-            .unstable()
-            .error("at least one nonterminal is required")
-            .emit();
-        return proc_macro::TokenStream::new();
+        return Error::new(Span::call_site(), "at least one nonterminal is required")
+            .into_compile_error()
+            .into();
     };
     let mut rules: BTreeMap<Ident, Vec<_>> = rules
         .into_iter()
@@ -634,7 +625,7 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let fake_start = Ident::new("__FIXME__start", Span::call_site());
     fake_rule = Rule {
         rhs: vec![],
-        rhs_span: proc_macro::Span::call_site(),
+        arrow: Default::default(),
         action: quote!(),
         exclusions: BTreeSet::new(),
         exclude_eof: false,
@@ -651,7 +642,7 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         rules: rules,
         start: fake_start,
     };
-    lr1_machine(
+    let result = lr1_machine(
         &grammar,
         &types,
         parser.token_ty,
@@ -666,14 +657,15 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             debug_assert_eq!(syms.len(), act.rhs.len());
             for (i, (sym, x)) in syms.iter().zip(&act.rhs).enumerate() {
                 args.push(match *x {
-                    RuleRhsItem::SymbolPat(_, ref pat) => Some(pat.clone().into_token_stream()),
-                    RuleRhsItem::Destructure(ref ident, sp, ref pats) => {
+                    RuleRhsItem::SymbolPat(_, _, ref pat) => Some(pat.clone().into_token_stream()),
+                    RuleRhsItem::Destructure(ref ident, _, ref pats) => {
                         let id = Ident::new(&format!("s{}", i), Span::call_site());
                         let terminal = match *sym {
                             Nonterminal(_) => {
-                                sp.unstable()
-                                    .error("can't bind enum case to a nonterminal")
-                                    .emit();
+                                errors.push(Error::new_spanned(
+                                    x,
+                                    "can't bind enum case to a nonterminal",
+                                ));
                                 Ident::new("__error", Span::call_site())
                             }
                             Terminal(ref x) => {
@@ -681,11 +673,11 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 x.clone()
                             }
                         };
-                        expr = quote_spanned!(act.rhs_span.into() =>
+                        expr = quote_spanned!(act.head().span() =>
                         {
                             // force a by-move capture
                             match {#id} {
-                                #terminal(#(#pats),*) => #expr,
+                                #terminal(#pats) => #expr,
                                 _ => unreachable!(),
                             }
                         });
@@ -704,7 +696,7 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 });
             }
 
-            (expr, args, act.rhs_span.into())
+            (expr, args, act.head().span())
         },
         |rhs, token| match token {
             Some(id) => !rhs.act.exclusions.contains(&id),
@@ -720,9 +712,9 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 r1,
                 r2,
             } => {
-                // FIXME: wtf this span
-                proc_macro::Span::call_site()
-                    .error(format!(
+                let mut error = Error::new_spanned(
+                    r1.1.act.head(),
+                    format!(
                         "reduce-reduce conflict:
 state: {}
 token: {}",
@@ -731,29 +723,31 @@ token: {}",
                             Some(id) => id.to_string(),
                             None => "EOF".to_string(),
                         }
-                    ))
-                    .span_note(r1.1.act.rhs_span, "conflicting rule")
-                    .span_note(r2.1.act.rhs_span, "conflicting rule")
-                    .emit();
+                    ),
+                );
+                error.combine(Error::new_spanned(
+                    r2.1.act.head(),
+                    "this is the conflicting rule",
+                ));
+                error
             }
-            LR1Conflict::ShiftReduce { state, token, rule } => {
-                rule.1
-                    .act
-                    .rhs_span
-                    .error(format!(
-                        "shift-reduce conflict:
+            LR1Conflict::ShiftReduce { state, token, rule } => Error::new_spanned(
+                rule.1.act.head(),
+                format!(
+                    "shift-reduce conflict:
 state: {}
 token: {}",
-                        pretty(&state, "       "),
-                        match token {
-                            Some(id) => id.to_string(),
-                            None => "EOF".to_string(),
-                        }
-                    ))
-                    .emit();
-            }
-        };
-        TokenStream::new()
-    })
-    .into()
+                    pretty(&state, "       "),
+                    match token {
+                        Some(id) => id.to_string(),
+                        None => "EOF".to_string(),
+                    }
+                ),
+            ),
+        }
+        .into_compile_error()
+    });
+    
+    let errors = errors.into_iter().map(|e| e.into_compile_error()).collect::<TokenStream>();
+    quote!(#errors #result).into()
 }

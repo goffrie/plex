@@ -13,7 +13,7 @@ This crate provides a couple syntax extensions:
   give each nonterminal a Rust type, allowing you to build an AST recursively.
   It also supports spans, giving you convenient source location reporting.
 
-You can find a demo in `examples/demo.rs`. Note that nightly Rust is required.
+You can find a demo in `examples/demo.rs`.
 
 ## Usage
 

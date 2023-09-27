@@ -1,6 +1,4 @@
 #![recursion_limit = "128"]
-#![feature(proc_macro_diagnostic)]
-#![feature(proc_macro_span)]
 #![warn(unused_extern_crates)]
 
 //! # plex, a parser and lexer generator

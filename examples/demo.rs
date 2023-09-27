@@ -1,6 +1,4 @@
 #![feature(proc_macro_hygiene)]
-extern crate plex;
-
 use std::io::Read;
 
 mod lexer {
@@ -135,7 +133,7 @@ mod parser {
     use crate::ast::*;
     use crate::lexer::Token::*;
     use crate::lexer::*;
-    use crate::plex::parser;
+    use plex::parser;
     parser! {
         fn parse_(Token, Span);
 

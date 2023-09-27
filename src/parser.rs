@@ -4,13 +4,15 @@ use std::fmt::{self, Write};
 
 use lalr::*;
 
-use proc_macro;
 use proc_macro2::{Span, TokenStream};
-use quote::ToTokens;
+use quote::{quote, quote_spanned, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{self, token, Attribute, Block, Expr, Ident, Meta, NestedMeta, Pat, Type, Visibility};
+use syn::{
+    self, braced, bracketed, parenthesized, parse_macro_input, token, Attribute, Block, Expr,
+    Ident, Meta, NestedMeta, Pat, Token, Type, Visibility,
+};
 
 /// Return the most frequent item in the given iterator, or None if it is empty.
 /// Picks an arbitrary item in case of a tie.

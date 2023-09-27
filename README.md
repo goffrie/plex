@@ -17,11 +17,9 @@ You can find a demo in `examples/demo.rs`. Note that nightly Rust is required.
 
 ## Usage
 
-First, include `plex`.
+First, include the `plex` macros.
 
 ```rust
-#![feature(proc_macro_hygiene)]
-extern crate plex;
 use plex::{lexer, parser};
 ```
 

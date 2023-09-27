@@ -2,6 +2,7 @@
 
 name = "plex"
 version = "0.2.5"
+edition = "2018"
 authors = ["Geoffry Song <goffrie@gmail.com>"]
 
 description = "A syntax extension for writing lexers and parsers."

@@ -5,9 +5,11 @@ use redfa::regex::Regex;
 use redfa::Dfa;
 
 use proc_macro2::{Span, TokenStream};
-use syn;
+use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{token, Expr, Ident, Lifetime, LitStr, Type, Visibility};
+use syn::{
+    parenthesized, parse_macro_input, token, Expr, Ident, Lifetime, LitStr, Token, Type, Visibility,
+};
 
 fn dfa_fn<T>(
     dfa: &Dfa<char, T>,
@@ -302,5 +304,6 @@ pub fn lexer(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 None
             }
         }
-    ).into()
+    )
+    .into()
 }

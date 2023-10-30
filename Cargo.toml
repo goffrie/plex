@@ -30,3 +30,6 @@ redfa = { version = "0.0.2", optional = true }
 syn = { version = "2.0", features = ["extra-traits", "full"] }
 proc-macro2 = { version = "1.0" }
 quote = "1.0"
+
+[dev-dependencies]
+trybuild = "1.0.85"

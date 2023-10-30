@@ -1,0 +1,8 @@
+error: shift-reduce conflict:
+       state: statement -> If LParen expr RParen statement •
+              statement -> If LParen expr RParen statement • Else statement
+       token: Else
+  --> tests/ui/if_else_shift_reduce.rs:38:9
+   |
+38 |         If LParen expr[head] RParen statement[then] => Statement::If(
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

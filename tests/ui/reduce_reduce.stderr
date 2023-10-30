@@ -1,0 +1,14 @@
+error: reduce-reduce conflict:
+       state: expr -> Lit •
+              expr -> Minus Lit •
+       token: EOF
+  --> tests/ui/reduce_reduce.rs:27:9
+   |
+27 |         Minus Lit(i) => Expr::Lit(-i),
+   |         ^^^^^^^^^^^^^^^
+
+error: this is the conflicting rule
+  --> tests/ui/reduce_reduce.rs:21:9
+   |
+21 |         Lit(i) => Expr::Lit(i),
+   |         ^^^^^^^^^

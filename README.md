@@ -1,7 +1,5 @@
 ## plex, a parser and lexer generator
 
-[![Build Status](https://travis-ci.org/goffrie/plex.png)](https://travis-ci.org/goffrie/plex)
-
 This crate provides a couple syntax extensions:
 
 - `lexer!`, which creates a DFA-based lexer that uses maximal munch.  It works

@@ -2,6 +2,7 @@ error: reduce-reduce conflict:
        state: expr -> Lit •
               expr -> Minus Lit •
        token: EOF
+       path: Minus Lit
   --> tests/ui/reduce_reduce.rs:27:9
    |
 27 |         Minus Lit(i) => Expr::Lit(-i),

@@ -705,6 +705,43 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         |rhs, _| rhs.act.priority,
     )
     .unwrap_or_else(|conflict| {
+        // Finds a shortest sequence of symbols that reaches the given `state` in the LR(0) state machine.
+        let find_path = |state| {
+            let lr0_state_machine = grammar.lr0_state_machine();
+            let mut prev_state = vec![None; lr0_state_machine.states.len()];
+            // BFS
+            let mut q = vec![0];
+            let mut qi = 0;
+            let state_index = lr0_state_machine
+                .states
+                .iter()
+                .position(|(st, _)| *st == state)
+                .expect("state must be present in state machine");
+            while qi < q.len() {
+                let state = q[qi];
+                qi += 1;
+                for (&symbol, &next_state) in &lr0_state_machine.states[state].1 {
+                    if prev_state[next_state].is_none() {
+                        prev_state[next_state] = Some((symbol, state));
+                        if next_state == state_index {
+                            break;
+                        }
+                        q.push(next_state);
+                    }
+                }
+            }
+            let mut path = vec![];
+            let mut cur = state_index;
+            while let Some((sym, next)) = prev_state[cur] {
+                path.push(match sym {
+                    Terminal(t) => t.to_string(),
+                    Nonterminal(nt) => nt.to_string(),
+                });
+                cur = next;
+            }
+            path.reverse();
+            path
+        };
         match conflict {
             LR1Conflict::ReduceReduce {
                 state,
@@ -717,12 +754,14 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     format!(
                         "reduce-reduce conflict:
 state: {}
-token: {}",
+token: {}
+path: {}",
                         pretty(&state, "       "),
                         match token {
                             Some(id) => id.to_string(),
                             None => "EOF".to_string(),
-                        }
+                        },
+                        find_path(state).join(" ")
                     ),
                 );
                 error.combine(Error::new_spanned(
@@ -736,18 +775,23 @@ token: {}",
                 format!(
                     "shift-reduce conflict:
 state: {}
-token: {}",
+token: {}
+path: {}",
                     pretty(&state, "       "),
                     match token {
                         Some(id) => id.to_string(),
                         None => "EOF".to_string(),
-                    }
+                    },
+                    find_path(state).join(" ")
                 ),
             ),
         }
         .into_compile_error()
     });
-    
-    let errors = errors.into_iter().map(|e| e.into_compile_error()).collect::<TokenStream>();
+
+    let errors = errors
+        .into_iter()
+        .map(|e| e.into_compile_error())
+        .collect::<TokenStream>();
     quote!(#errors #result).into()
 }

@@ -26,7 +26,7 @@ parser = ["lalr"]
 [dependencies]
 
 lalr = { version = "0.0.2", optional = true }
-redfa = { version = "0.0.2", optional = true }
+redfa = { version = "0.0.3", optional = true }
 syn = { version = "2.0", features = ["extra-traits", "full"] }
 proc-macro2 = { version = "1.0" }
 quote = "1.0"
